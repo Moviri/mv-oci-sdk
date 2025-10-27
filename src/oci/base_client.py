@@ -760,7 +760,6 @@ class BaseClient(object):
         self.logger.info(
             utc_now() + "Request: %s %s" % (str(request.method), request.url)
         )
-        self.logger.info(utc_now() + f"Request proxies: {self.session.proxies}")
 
         initial_circuit_breaker_state = None
         if self.circuit_breaker_name:
