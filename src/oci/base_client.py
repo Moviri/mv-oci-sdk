@@ -365,7 +365,6 @@ class BaseClient(object):
 
         # Circuit Breaker at client level
         self.circuit_breaker_strategy = kwargs.get("circuit_breaker_strategy")
-        self.circuit_breaker_name = None
         # Log if Circuit Breaker Strategy is not enabled or if using Default Circuit breaker Strategy
         if self.circuit_breaker_strategy is None or isinstance(
             self.circuit_breaker_strategy, NoCircuitBreakerStrategy
@@ -762,7 +761,7 @@ class BaseClient(object):
         )
 
         initial_circuit_breaker_state = None
-        if self.circuit_breaker_name:
+        if self.circuit_breaker_strategy:
             initial_circuit_breaker_state = CircuitBreakerMonitor.get(
                 self.circuit_breaker_strategy.name
             ).state
