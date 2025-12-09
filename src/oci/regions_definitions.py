@@ -45,6 +45,8 @@ REGIONS_SHORT_NAMES = {
     'ruh': 'me-riyadh-1',
     'onm': 'ap-delhi-1',
     'hsg': 'ap-batam-1',
+    'orf': 'eu-madrid-3',
+    'nrq': 'eu-turin-1',
     'lfi': 'us-langley-1',
     'luf': 'us-luke-1',
     'ric': 'us-gov-ashburn-1',
@@ -55,6 +57,7 @@ REGIONS_SHORT_NAMES = {
     'nja': 'ap-chiyoda-1',
     'ukb': 'ap-ibaraki-1',
     'mct': 'me-dcc-muscat-1',
+    'ibr': 'me-ibri-1',
     'wga': 'ap-dcc-canberra-1',
     'bgy': 'eu-dcc-milan-1',
     'mxp': 'eu-dcc-milan-2',
@@ -125,6 +128,8 @@ REGION_REALMS = {
     'me-riyadh-1': 'oc1',
     'ap-delhi-1': 'oc1',
     'ap-batam-1': 'oc1',
+    'eu-madrid-3': 'oc1',
+    'eu-turin-1': 'oc1',
 
     'us-langley-1': 'oc2',
     'us-luke-1': 'oc2',
@@ -140,6 +145,7 @@ REGION_REALMS = {
     'ap-ibaraki-1': 'oc8',
 
     'me-dcc-muscat-1': 'oc9',
+    'me-ibri-1': 'oc9',
 
     'ap-dcc-canberra-1': 'oc10',
 
@@ -244,6 +250,8 @@ REGIONS = [
     'me-riyadh-1',
     'ap-delhi-1',
     'ap-batam-1',
+    'eu-madrid-3',
+    'eu-turin-1',
     'us-langley-1',
     'us-luke-1',
     'us-gov-ashburn-1',
@@ -254,6 +262,7 @@ REGIONS = [
     'ap-chiyoda-1',
     'ap-ibaraki-1',
     'me-dcc-muscat-1',
+    'me-ibri-1',
     'ap-dcc-canberra-1',
     'eu-dcc-milan-1',
     'eu-dcc-milan-2',
