@@ -1063,3 +1063,12 @@ def rewind_body(prepared_request):
                                         "body for redirect.")
     else:
         raise UnrewindableBodyError("Unable to rewind request body for redirect.")
+
+def create_proxy_url_log_safe(proxy: str | dict | OrderedDict) -> str:
+    if type(proxy) == str:
+        return re.sub(r"(\w+://.+?:).+(@.+)", r"\1*****\2", proxy)
+    if type(proxy) == dict or type(proxy) == OrderedDict:
+        for key, value in proxy.items():
+            proxy[key] = create_proxy_url_log_safe(value)
+        return proxy
+    return proxy

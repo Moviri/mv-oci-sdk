@@ -35,7 +35,6 @@ from oci._vendor.urllib3.response import HTTPResponse
 from oci._vendor.urllib3.util import Timeout as TimeoutSauce
 from oci._vendor.urllib3.util import parse_url
 from oci._vendor.urllib3.util.retry import Retry
-
 from .auth import _basic_auth_str
 from .compat import basestring, urlparse
 from .cookies import extract_cookies_to_jar
@@ -55,6 +54,7 @@ from .models import Response
 from .structures import CaseInsensitiveDict
 from .utils import (
     DEFAULT_CA_BUNDLE_PATH,
+    create_proxy_url_log_safe,
     extract_zipped_paths,
     get_auth_from_url,
     get_encoding_from_headers,
@@ -504,7 +504,7 @@ class HTTPAdapter(BaseAdapter):
 
         print(
             f"adapters.HTTPAdapter.send: url={url}, timeout={timeout}, "
-            f"verify={verify}, cert={cert}, proxies={proxies}, retries={self.max_retries}"
+            f"verify={verify}, cert={cert}, proxies={create_proxy_url_log_safe(proxies)}, retries={self.max_retries}"
         )
 
         try:
