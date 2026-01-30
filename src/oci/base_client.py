@@ -757,7 +757,7 @@ class BaseClient(object):
         api_reference_link=None,
     ):
         self.logger.info(
-            utc_now() + "Request: %s %s" % (str(request.method), request.url)
+            "Request: %s %s" % (str(request.method), request.url)
         )
 
         initial_circuit_breaker_state = None
