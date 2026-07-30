@@ -664,7 +664,8 @@ class BaseClient(object):
                 isinstance(self.signer, signers.EphemeralResourcePrincipalV21Signer) or
                 isinstance(self.signer, signers.NestedResourcePrincipals) or
                 (isinstance(self.signer, signers.OkeWorkloadIdentityResourcePrincipalSigner) and oke_workload_refresh_enabled) or
-                isinstance(self.signer, signers.OauthExchangeTokenSigner)):
+                isinstance(self.signer, signers.OauthExchangeTokenSigner) or
+                isinstance(self.signer, signers.TokenExchangeSigner)):
             return True
         else:
             return False
@@ -1066,10 +1067,12 @@ class BaseClient(object):
         self.logger.info(f"{utc_now()} Request: {str(request.method)} {redacted_request_url}")
 
         initial_circuit_breaker_state = None
-        if self.circuit_breaker_strategy:
-            initial_circuit_breaker_state = CircuitBreakerMonitor.get(self.circuit_breaker_strategy.name).state
-            if initial_circuit_breaker_state != circuitbreaker.STATE_CLOSED:
-                self.logger.debug("Circuit Breaker State is {}!".format(initial_circuit_breaker_state))
+        if isinstance(self.circuit_breaker_strategy, CircuitBreakerStrategy):
+            monitored_circuit_breaker = CircuitBreakerMonitor.get(self.circuit_breaker_strategy.name)
+            if monitored_circuit_breaker is not None:
+                initial_circuit_breaker_state = monitored_circuit_breaker.state
+                if initial_circuit_breaker_state != circuitbreaker.STATE_CLOSED:
+                    self.logger.debug("Circuit Breaker State is {}!".format(initial_circuit_breaker_state))
 
         signer = self.signer
         if not request.enforce_content_headers:

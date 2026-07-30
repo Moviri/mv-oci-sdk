@@ -1,11 +1,13 @@
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 import urllib3
-from urllib3.exceptions import HeaderParsingError
+from urllib3.exceptions import HeaderParsingError, ProtocolError
 
 from oci import constants, exceptions
 from oci._vendor import requests
@@ -18,6 +20,37 @@ from oci.base_client import (
 )
 from oci.object_storage.transfer.upload_manager import UploadManager
 from oci.request import Request
+
+
+class RequestBodyRecorder(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            chunks = []
+            while True:
+                chunk_size = int(self.rfile.readline().strip(), 16)
+                if chunk_size == 0:
+                    self.rfile.readline()
+                    break
+                chunks.append(self.rfile.read(chunk_size))
+                self.rfile.read(2)
+            body = b"".join(chunks)
+        else:
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+
+        self.server.received_requests.append(
+            {
+                "body": body,
+                "transfer_encoding": self.headers.get("Transfer-Encoding"),
+                "content_length": self.headers.get("Content-Length"),
+            }
+        )
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format, *args):
+        pass
 
 
 def valid_config():
@@ -108,6 +141,64 @@ def test_socks_proxy_delegates_to_requests_adapter():
         assert adapter.proxy_manager_for("socks5://proxy.example:1080") is sentinel
 
     parent_proxy_manager.assert_called_once()
+
+
+def test_generator_body_uses_urllib3_chunked_request_path():
+    assert urllib3.__version__.split(".", 1)[0] == "2"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RequestBodyRecorder)
+    server.received_requests = []
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    session = requests.Session()
+
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_port}/upload"
+        chunked_response = session.post(
+            endpoint,
+            data=(chunk for chunk in (b"first-", b"second-", b"third")),
+            timeout=(2, 2),
+        )
+        fixed_response = session.post(
+            endpoint,
+            data=b"fixed-length",
+            timeout=(2, 2),
+        )
+    finally:
+        session.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+
+    assert chunked_response.status_code == 200
+    assert fixed_response.status_code == 200
+    assert server.received_requests[0] == {
+        "body": b"first-second-third",
+        "transfer_encoding": "chunked",
+        "content_length": None,
+    }
+    assert server.received_requests[1] == {
+        "body": b"fixed-length",
+        "transfer_encoding": None,
+        "content_length": str(len(b"fixed-length")),
+    }
+
+
+def test_adapter_translates_urllib3_protocol_errors():
+    adapter = requests.adapters.HTTPAdapter()
+    prepared_request = requests.Request(
+        "POST",
+        "https://example.com/upload",
+        data=(chunk for chunk in (b"one", b"two")),
+    ).prepare()
+    connection = Mock()
+    connection.urlopen.side_effect = ProtocolError("transport failed")
+
+    with (
+        patch.object(adapter, "get_connection", return_value=connection),
+        patch.object(adapter, "cert_verify"),
+    ):
+        with pytest.raises(requests.exceptions.ConnectionError):
+            adapter.send(prepared_request)
 
 
 def test_object_storage_pool_resize_preserves_oci_adapter():

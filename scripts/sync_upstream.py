@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +18,12 @@ METADATA_PATH = REPO_ROOT / "upstream" / "oci-python-sdk.json"
 MANIFEST_PATH = REPO_ROOT / "upstream" / "selected-paths.txt"
 PRUNE_PATH = REPO_ROOT / "upstream" / "prune-paths.txt"
 INIT_OVERLAY_PATH = REPO_ROOT / "upstream" / "oci-init-overlay.py"
+TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH = (
+    REPO_ROOT / "upstream" / "token-exchange-signer-overlay.py"
+)
+MANAGED_MYSQL_WORK_REQUEST_OVERLAY_PATH = (
+    REPO_ROOT / "upstream" / "managed-mysql-get-work-request-overlay.py"
+)
 
 
 def run_git(
@@ -41,6 +47,66 @@ def read_path_list(path: Path) -> list[str]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
+
+
+def resolve_manifest_target(relative_path: str, *, repo_root: Path = REPO_ROOT) -> Path:
+    repo_root = repo_root.resolve()
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise RuntimeError("Manifest paths must not be empty.")
+    if relative_path != relative_path.strip():
+        raise RuntimeError(f"Manifest path has surrounding whitespace: {relative_path!r}")
+    if "\\" in relative_path:
+        raise RuntimeError(
+            f"Manifest paths must use forward slashes: {relative_path!r}"
+        )
+
+    posix_path = PurePosixPath(relative_path)
+    windows_path = PureWindowsPath(relative_path)
+    components = relative_path.split("/")
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or any(component in ("", ".", "..") for component in components)
+    ):
+        raise RuntimeError(
+            f"Manifest path must be a strict repository-relative descendant: {relative_path!r}"
+        )
+    if components[0] == ".git":
+        raise RuntimeError(
+            f"Manifest path must not target repository metadata: {relative_path!r}"
+        )
+
+    target = repo_root.joinpath(*components)
+    resolved_target = target.resolve(strict=False)
+    if resolved_target == repo_root or repo_root not in resolved_target.parents:
+        raise RuntimeError(
+            f"Manifest path escapes the repository: {relative_path!r}"
+        )
+    git_metadata = (repo_root / ".git").resolve(strict=False)
+    if resolved_target == git_metadata or git_metadata in resolved_target.parents:
+        raise RuntimeError(
+            f"Manifest path resolves into repository metadata: {relative_path!r}"
+        )
+    return target
+
+
+def validate_manifest_entries(
+    entries: list[str], *, repo_root: Path = REPO_ROOT
+) -> list[str]:
+    for entry in entries:
+        resolve_manifest_target(entry, repo_root=repo_root)
+    return entries
+
+
+def validate_sync_manifests(
+    selected_paths: list[str],
+    prune_paths: list[str],
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> tuple[list[str], list[str]]:
+    validate_manifest_entries(selected_paths, repo_root=repo_root)
+    validate_manifest_entries(prune_paths, repo_root=repo_root)
+    return selected_paths, prune_paths
 
 
 def require_clean_worktree() -> None:
@@ -128,29 +194,56 @@ def archive_selected_paths(
     archive_path.unlink()
 
 
-def remove_path(relative_path: str) -> None:
-    target = (REPO_ROOT / relative_path).resolve()
-    if REPO_ROOT != target and REPO_ROOT not in target.parents:
-        raise RuntimeError(f"Refusing to remove path outside repository: {relative_path}")
+def remove_path(relative_path: str, *, repo_root: Path = REPO_ROOT) -> None:
+    target = resolve_manifest_target(relative_path, repo_root=repo_root)
+    if target.is_symlink():
+        target.unlink()
+        return
     if target.is_dir():
         shutil.rmtree(target)
     elif target.exists():
         target.unlink()
 
 
-def copy_selected_paths(extracted_root: Path, selected_paths: list[str]) -> None:
+def copy_selected_paths(
+    extracted_root: Path,
+    selected_paths: list[str],
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> None:
     for relative_path in selected_paths:
         source = extracted_root / relative_path
         if not source.exists():
             raise RuntimeError(f"Selected path is absent from upstream commit: {relative_path}")
 
-        remove_path(relative_path)
-        destination = REPO_ROOT / relative_path
+        remove_path(relative_path, repo_root=repo_root)
+        destination = resolve_manifest_target(relative_path, repo_root=repo_root)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.is_dir():
             shutil.copytree(source, destination)
         else:
             shutil.copy2(source, destination)
+
+
+def apply_sync_payload(
+    extracted_root: Path,
+    selected_paths: list[str],
+    prune_paths: list[str],
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> None:
+    validate_sync_manifests(
+        selected_paths,
+        prune_paths,
+        repo_root=repo_root,
+    )
+    copy_selected_paths(
+        extracted_root,
+        selected_paths,
+        repo_root=repo_root,
+    )
+    for relative_path in prune_paths:
+        remove_path(relative_path, repo_root=repo_root)
 
 
 def replace_exact(path: Path, old: str, new: str, description: str) -> None:
@@ -161,6 +254,26 @@ def replace_exact(path: Path, old: str, new: str, description: str) -> None:
             f"Expected one {description} location in {path}, found {occurrences}"
         )
     path.write_text(content.replace(old, new), encoding="utf-8")
+
+
+def replace_between(
+    path: Path,
+    start_marker: str,
+    end_marker: str,
+    replacement: str,
+    description: str,
+) -> None:
+    content = path.read_text(encoding="utf-8")
+    if content.count(start_marker) != 1 or content.count(end_marker) != 1:
+        raise RuntimeError(
+            f"Expected one {description} section in {path}"
+        )
+    start = content.index(start_marker)
+    end = content.index(end_marker, start)
+    path.write_text(
+        content[:start] + replacement + content[end:],
+        encoding="utf-8",
+    )
 
 
 def apply_moviri_overlay(metadata: dict[str, str]) -> None:
@@ -183,9 +296,32 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     )
     replace_exact(
         base_client_path,
-        "if self.circuit_breaker_name:\n",
-        "if self.circuit_breaker_strategy:\n",
-        "circuit breaker state check",
+        (
+            "        if self.circuit_breaker_name:\n"
+            "            initial_circuit_breaker_state = CircuitBreakerMonitor.get(self.circuit_breaker_strategy.name).state\n"
+            "            if initial_circuit_breaker_state != circuitbreaker.STATE_CLOSED:\n"
+            "                self.logger.debug(\"Circuit Breaker State is {}!\".format(initial_circuit_breaker_state))\n"
+        ),
+        (
+            "        if isinstance(self.circuit_breaker_strategy, CircuitBreakerStrategy):\n"
+            "            monitored_circuit_breaker = CircuitBreakerMonitor.get(self.circuit_breaker_strategy.name)\n"
+            "            if monitored_circuit_breaker is not None:\n"
+            "                initial_circuit_breaker_state = monitored_circuit_breaker.state\n"
+            "                if initial_circuit_breaker_state != circuitbreaker.STATE_CLOSED:\n"
+            "                    self.logger.debug(\"Circuit Breaker State is {}!\".format(initial_circuit_breaker_state))\n"
+        ),
+        "circuit breaker state guard",
+    )
+    replace_exact(
+        base_client_path,
+        (
+            "                isinstance(self.signer, signers.OauthExchangeTokenSigner)):\n"
+        ),
+        (
+            "                isinstance(self.signer, signers.OauthExchangeTokenSigner) or\n"
+            "                isinstance(self.signer, signers.TokenExchangeSigner)):\n"
+        ),
+        "TokenExchangeSigner 401 refresh classification",
     )
     replace_exact(
         base_client_path,
@@ -221,6 +357,62 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
             "    ),\n"
         ),
         "URI userinfo redaction overlay",
+    )
+
+    token_exchange_signer_path = (
+        REPO_ROOT / "src" / "oci" / "auth" / "signers" / "token_exchange_signer.py"
+    )
+    shutil.copy2(TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH, token_exchange_signer_path)
+
+    requests_adapter_path = (
+        REPO_ROOT / "src" / "oci" / "_vendor" / "requests" / "adapters.py"
+    )
+    replace_exact(
+        requests_adapter_path,
+        "from urllib3.response import HTTPResponse\n",
+        "",
+        "obsolete urllib3 HTTPResponse import",
+    )
+    replace_between(
+        requests_adapter_path,
+        "        try:\n            if not chunked:\n",
+        "        except (ProtocolError, socket.error) as err:\n",
+        (
+            "        try:\n"
+            "            resp = conn.urlopen(\n"
+            "                method=request.method,\n"
+            "                url=url,\n"
+            "                body=request.body,\n"
+            "                headers=request.headers,\n"
+            "                redirect=False,\n"
+            "                assert_same_host=False,\n"
+            "                preload_content=False,\n"
+            "                decode_content=False,\n"
+            "                retries=self.max_retries,\n"
+            "                timeout=timeout,\n"
+            "                enforce_content_length=True,\n"
+            "                chunked=chunked\n"
+            "            )\n\n"
+        ),
+        "urllib3 2.x request dispatch",
+    )
+
+    managed_mysql_client_path = (
+        REPO_ROOT
+        / "src"
+        / "oci"
+        / "database_management"
+        / "managed_my_sql_databases_client.py"
+    )
+    replace_exact(
+        managed_mysql_client_path,
+        "    def list_high_availability_members(self, managed_my_sql_database_id, **kwargs):\n",
+        (
+            MANAGED_MYSQL_WORK_REQUEST_OVERLAY_PATH.read_text(encoding="utf-8")
+            + "\n"
+            + "    def list_high_availability_members(self, managed_my_sql_database_id, **kwargs):\n"
+        ),
+        "Managed MySQL work-request operation",
     )
 
 
@@ -274,6 +466,7 @@ def main() -> int:
     upstream_checkout = args.oracle_checkout.resolve()
 
     require_clean_worktree()
+    validate_sync_manifests(selected_paths, prune_paths)
     verify_upstream(upstream_checkout, metadata)
 
     with tempfile.TemporaryDirectory(prefix="mv-oci-sdk-sync-") as temp_dir:
@@ -284,10 +477,11 @@ def main() -> int:
             selected_paths,
             extracted_root,
         )
-        copy_selected_paths(extracted_root, selected_paths)
-
-    for relative_path in prune_paths:
-        remove_path(relative_path)
+        apply_sync_payload(
+            extracted_root,
+            selected_paths,
+            prune_paths,
+        )
 
     apply_moviri_overlay(metadata)
     print(

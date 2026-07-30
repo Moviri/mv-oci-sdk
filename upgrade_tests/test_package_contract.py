@@ -1,12 +1,20 @@
+import ast
 import importlib
 import importlib.metadata
 import importlib.util
 import inspect
+import pkgutil
 from pathlib import Path
 
 import jwt
 import oci
 import urllib3
+from packaging.requirements import Requirement
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 
 RETAINED_SERVICES = (
@@ -41,6 +49,17 @@ def test_excluded_service_is_not_advertised_or_packaged():
     assert importlib.util.find_spec("oci.audit") is None
 
 
+def test_every_packaged_module_imports():
+    failures = {}
+    for module in pkgutil.walk_packages(oci.__path__, prefix="oci."):
+        try:
+            importlib.import_module(module.name)
+        except Exception as error:  # pragma: no cover - assertion reports exact module
+            failures[module.name] = f"{type(error).__name__}: {error}"
+
+    assert not failures
+
+
 def test_urllib3_and_pyjwt_are_external_dependencies():
     package_root = Path(oci.__file__).resolve().parent
 
@@ -48,6 +67,44 @@ def test_urllib3_and_pyjwt_are_external_dependencies():
     assert not (package_root / "_vendor" / "jwt").exists()
     assert package_root not in Path(urllib3.__file__).resolve().parents
     assert package_root not in Path(jwt.__file__).resolve().parents
+
+
+def test_dependency_and_build_safety_floors():
+    root = Path(__file__).resolve().parents[1]
+    setup_tree = ast.parse((root / "setup.py").read_text(encoding="utf-8"))
+    setup_requires = next(
+        ast.literal_eval(node.value)
+        for node in setup_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "requires"
+            for target in node.targets
+        )
+    )
+    setup_requirements = {
+        Requirement(value).name.lower(): Requirement(value)
+        for value in setup_requires
+    }
+    readable_requirements = {
+        Requirement(value).name.lower(): Requirement(value)
+        for value in (root / "requirements.txt").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if value and not value.startswith("#")
+    }
+
+    for requirements in (setup_requirements, readable_requirements):
+        assert str(requirements["cryptography"].specifier) == "<50.0.0,>=46.0.5"
+        assert str(requirements["pyopenssl"].specifier) == "<27.0.0,>=26.0.0"
+
+    build_metadata = tomllib.loads(
+        (root / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    build_requirements = {
+        Requirement(value).name.lower(): Requirement(value)
+        for value in build_metadata["build-system"]["requires"]
+    }
+    assert str(build_requirements["wheel"].specifier) == ">=0.46.2"
 
 
 def test_python_oci_compute_method_signatures():

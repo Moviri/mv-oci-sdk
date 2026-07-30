@@ -10,8 +10,11 @@ This release refreshes the curated Moviri SDK from Oracle OCI Python SDK
 - urllib3 is external and constrained to `urllib3>=2.6.3`.
 - PyJWT is external and constrained to `PyJWT>=2.12.0`.
 - Oracle's compatible vendored Requests implementation is retained.
-- Oracle's `cryptography`, `pyOpenSSL`, `python-dateutil`, `pytz`,
-  `circuitbreaker`, and `crc32c` bounds are used for the Python 3.10+ line.
+- `cryptography` is constrained to `>=46.0.5,<50.0.0`.
+- `pyOpenSSL` is constrained to `>=26.0.0,<27.0.0`.
+- The isolated build requires `wheel>=0.46.2`.
+- Oracle's compatible `python-dateutil`, `pytz`, `circuitbreaker`, and `crc32c`
+  bounds are retained for the Python 3.10+ line.
 - Vendored urllib3 and PyJWT are removed.
 
 The locally available primary consumer, `python-oci-compute`, declares
@@ -54,9 +57,9 @@ manifest.
 | Proxy connection diagnostics | Superseded by Oracle's redacted request and transport diagnostics; the old ad-hoc prints are removed. |
 | Narrow proxy password masking | Superseded by Oracle's general redaction, with a tested Moviri URI-userinfo redaction guard for proxy credentials. |
 | Additional vendored HTTP adapter print | Intentionally removed because it wrote directly to stdout and duplicated structured SDK logging. |
-| November 2025 circuit-breaker warning/state workaround | Retained as a tested strategy-based state check. |
+| November 2025 circuit-breaker warning/state workaround | Retained as a tested strategy-based state check that also supports disabled circuit breaking. |
 | Manual region additions | Superseded by Oracle 2.183.0 region definitions. |
-| Unbounded `cryptography` and `pyOpenSSL` declarations | Superseded by Oracle's tested upper bounds. |
+| Unbounded `cryptography` and `pyOpenSSL` declarations | Replaced by explicit safety floors and compatible upper bounds. |
 
 ## Transport and security
 
@@ -65,38 +68,61 @@ session-scoped OCI HTTP adapter, OpenSSL 3 FIPS guard, and sensitive-data
 redaction. It no longer mutates urllib3's process-wide pool mapping and it
 preserves the OCI adapter when Object Storage resizes a connection pool.
 
+The remediation also restores generator-backed chunked requests on external
+urllib3 2.x, gives `TokenExchangeSigner` the existing one-time 401 refresh
+behavior, requires HTTPS with finite exchange timeouts, and prevents token
+exchange credentials or response bodies from entering logs. The Managed MySQL
+composite operation can now poll its Database Management work request through
+a generated-style client operation.
+
+Synchronization rejects unsafe manifest targets before any repository
+mutation. Manual publication validates Python 3.10 through 3.13, builds and
+checks one artifact, and permits only a protected `pypi` environment on
+`refs/heads/master` to publish that already-validated artifact.
+
 ## Validation results
 
-The final wheel was tested on Python 3.10.20, 3.11.15, 3.12.13, and 3.13.13.
-The focused upgrade suite passed all 46 tests on every version.
+The remediation suite passed all 90 tests on Python 3.10.20, 3.11.15,
+3.12.13, and 3.13.13.
 
 | Check | Result |
 | --- | --- |
-| Reproducible synchronization | A second sync from the recorded tag and commit produced no changes. |
+| Focused remediations | R1 through R8 regressions passed, including circuit-breaker disabled paths, urllib3 2.x chunked transport, token exchange refresh/security, Managed MySQL polling, sync path safety, hermetic tag verification, and publication contracts. |
+| Packaged imports | Every module in the built `oci` package imported successfully. |
+| Reproducible synchronization | Two consecutive syncs from the recorded Oracle tag and commit produced no diff after the first replay. |
+| Fresh no-tags clone | The complete 90-test upgrade suite passed from a fresh Moviri clone created without tags. |
+| Source compilation | `python -m compileall -q src/oci` passed. |
 | Source and wheel build | Passed with `python -m build`. |
 | Distribution metadata | Both artifacts passed `twine check`. |
-| Clean wheel environment | `pip check` passed; `oci` imported from the installed `mv-oci-sdk` wheel; the official `oci` distribution was absent. |
+| Clean wheel environment | `pip check` passed; every packaged module imported from the installed `mv-oci-sdk` wheel; the official `oci` distribution was absent. |
+| Dependency bounds | Wheel metadata contains `cryptography<50.0.0,>=46.0.5`, `pyOpenSSL<27.0.0,>=26.0.0`, `urllib3>=2.6.3`, and `PyJWT>=2.12.0`. |
 | Dependency audit | No known vulnerabilities were reported for the installed external dependencies. The private `mv-oci-sdk` distribution was not present in the public advisory index; retained vendored libraries are listed in `upstream/vendored-dependencies.txt`. |
-| `python-oci-compute` | All 74 tests passed against the exact local wheel on Python 3.12.13. |
-| Dynatrace extension build | `dt-sdk build` produced a signed 13,298,137-byte extension after applying the documented Python 3.10 and PyJWT adoption changes to an isolated consumer copy. |
 | Credentialed OCI smoke collection | Not run because no OCI configuration or test-tenancy credentials were available. |
+
+Earlier external upgrade validation was not rerun during this remediation:
+
+- `python-oci-compute` previously passed all 74 tests against the local
+  2.183.0.1 wheel on Python 3.12.13.
+- `dt-sdk build` previously produced a signed 13,298,137-byte extension after
+  the documented Python 3.10 and PyJWT adoption changes were applied to an
+  isolated consumer copy.
 
 Artifact sizes:
 
 | Artifact | Size |
 | --- | ---: |
-| `mv-oci-sdk` 2.183.0.1 wheel | 7,155,596 bytes |
-| `mv-oci-sdk` 2.183.0.1 source distribution | 3,643,186 bytes |
-| Installed `oci` directory, including generated bytecode | 84,182,109 bytes |
-| Installed `oci` source payload, excluding generated bytecode | 45,997,127 bytes |
-| Signed `python-oci-compute` extension | 13,298,137 bytes |
+| `mv-oci-sdk` 2.183.0.1 wheel | 7,155,650 bytes |
+| `mv-oci-sdk` 2.183.0.1 source distribution | 3,643,714 bytes |
+| Installed `oci` directory, including generated bytecode | 92,286,540 bytes |
+| Installed `oci` source payload, excluding generated bytecode | 46,001,657 bytes |
+| Earlier signed `python-oci-compute` extension | 13,298,137 bytes |
 
 The wheel is below the 8 MB acceptance ceiling. The signed extension has 46.8%
 headroom under the current
 [25 MB Dynatrace extension-package limit](https://docs.dynatrace.com/docs/ingest-from/extensions/extension-limits).
 
 The previous `mv-oci-sdk` 2.142.0.13 wheel is 6,004,579 bytes, so the new wheel
-is 1,151,017 bytes (19.17%) larger. The increase is explained by generated API
+is 1,151,071 bytes (19.17%) larger. The increase is explained by generated API
 growth within the unchanged retained-service manifest, concentrated in
 `database`, `database_management`, `core`, and `database_tools`; no additional
 Oracle service package was added to meet the upgrade.
