@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 from __future__ import print_function
@@ -9,10 +9,13 @@ from .internal.multipart_object_assembler import MultipartObjectAssembler, DEFAU
 from .constants import DEFAULT_PART_SIZE, STREAMING_DEFAULT_PART_SIZE
 from .internal.file_read_callback_stream import FileReadCallbackStream
 from ...exceptions import MultipartUploadError
+from .internal.additional_checksum import Checksum
+from oci.util import back_up_body_calculate_stream_content_length
 
 
 class UploadManager:
     REQUESTS_POOL_SIZE_FACTOR = 4
+    OPC_CHECKSUM_ALGORITHM = "opc_checksum_algorithm"
 
     def __init__(self, object_storage_client, **kwargs):
         """
@@ -212,6 +215,45 @@ class UploadManager:
         :param str content_md5: (optional)
             The base-64 encoded MD5 hash of the body. This parameter is only used if the object is uploaded in a single part.
 
+        :param str opc_checksum_algorithm: (optional)
+            The optional checksum algorithm to use to compute and store the checksum of the body of the HTTP request (or the parts in case of multipart uploads),
+            in addition to the default MD5 checksum.
+
+            Allowed values are: "CRC32C", "SHA256", "SHA384"
+
+        :param str opc_content_crc32c: (optional)
+            Applicable only if CRC32C is specified in the opc-checksum-algorithm request header.
+
+            If opc-checksum-algorithm is CRC32C, it is set either by user supplied value or computed by client SDK.
+            The optional header that defines the base64-encoded, 32-bit CRC32C (Castagnoli) checksum of the body. If the optional opc-content-crc32c header
+            is present, Object Storage performs an integrity check on the body of the HTTP request by computing the CRC32C checksum for the body and comparing
+            it to the CRC32C checksum supplied in the header. If the two checksums do not match, the object is rejected and an HTTP-400 Unmatched Content CRC32C error
+            is returned with the message:
+
+            \"The computed CRC32C of the request body (ACTUAL_CRC32C) does not match the opc-content-crc32c header (HEADER_CRC32C)\"
+
+        :param str opc_content_sha256: (optional)
+            Applicable only if SHA256 is specified in the opc-checksum-algorithm request header.
+
+            If opc-checksum-algorithm is SHA256, it is set either by user supplied value or computed by client SDK.
+            The optional header that defines the base64-encoded SHA256 hash of the body. If the optional opc-content-sha256 header is present, Object
+            Storage performs an integrity check on the body of the HTTP request by computing the SHA256 hash for the body and comparing it to the
+            SHA256 hash supplied in the header. If the two hashes do not match, the object is rejected and an HTTP-400 Unmatched Content SHA256 error
+            is returned with the message:
+
+            \"The computed SHA256 of the request body (ACTUAL_SHA256) does not match the opc-content-sha256 header (HEADER_SHA256)\"
+
+        :param str opc_content_sha384: (optional)
+            Applicable only if SHA384 is specified in the opc-checksum-algorithm request header.
+
+            If opc-checksum-algorithm is SHA384 , it is set either by user supplied value or computed by client SDK.
+            The optional header that defines the base64-encoded SHA384 hash of the body. If the optional opc-content-sha384 header is present, Object
+            Storage performs an integrity check on the body of the HTTP request by computing the SHA384 hash for the body and comparing it to the
+            SHA384 hash supplied in the header. If the two hashes do not match, the object is rejected and an HTTP-400 Unmatched Content SHA384 error
+            is returned with the message:
+
+            \"The computed SHA384 of the request body (ACTUAL_SHA384) does not match the opc-content-sha384 header (HEADER_SHA384)\"
+
         :param str content_type (optional):
             The content type of the object to upload.
 
@@ -357,6 +399,13 @@ class UploadManager:
             progress_callback = kwargs['progress_callback']
             kwargs.pop('progress_callback')
 
+        cksm = None
+        if self.OPC_CHECKSUM_ALGORITHM in kwargs.keys():
+            cksm = Checksum(kwargs[self.OPC_CHECKSUM_ALGORITHM])
+            for user_param in kwargs.keys():
+                if user_param in Checksum.LIST_CONTENT_ALGO:
+                    cksm.is_computation_required = False
+
         with open(file_path, 'rb') as file_object:
             # progress_callback is not supported for files of zero bytes
             # FileReadCallbackStream will not be handled properly by requests in this case
@@ -364,6 +413,10 @@ class UploadManager:
             if file_size != 0 and progress_callback:
                 wrapped_file = FileReadCallbackStream(file_object,
                                                       lambda bytes_read: progress_callback(bytes_read))
+                if cksm and cksm.is_computation_required:
+                    data = back_up_body_calculate_stream_content_length(wrapped_file)
+                    wrapped_file.file.seek(0)
+                    kwargs[cksm.get_opc_content_param()] = cksm.calculate_checksum(data['byte_content'])
 
                 response = self.object_storage_client.put_object(namespace_name,
                                                                  bucket_name,
@@ -371,6 +424,9 @@ class UploadManager:
                                                                  wrapped_file,
                                                                  **kwargs)
             else:
+                if cksm and cksm.is_computation_required:
+                    kwargs[cksm.get_opc_content_param()] = cksm.calculate_checksum(file_object.read())
+                    file_object.seek(0)
                 response = self.object_storage_client.put_object(namespace_name,
                                                                  bucket_name,
                                                                  object_name,
@@ -394,14 +450,44 @@ class UploadManager:
             parallel_processes = parallel_process_count
 
         target_pool_size = UploadManager.REQUESTS_POOL_SIZE_FACTOR * parallel_processes
-        adapter = requests.adapters.HTTPAdapter(pool_maxsize=target_pool_size)
+        current_adapter = object_storage_client.base_client.session.adapters.get(mount_protocol)
 
-        if mount_protocol in object_storage_client.base_client.session.adapters:
+        if current_adapter is not None:
             # If someone has already mounted and it's large enough, don't mount over the top
-            if object_storage_client.base_client.session.adapters[mount_protocol]._pool_maxsize >= target_pool_size:
+            current_pool_maxsize = getattr(current_adapter, '_pool_maxsize', 0)
+            if current_pool_maxsize >= target_pool_size:
                 return
 
+        adapter = UploadManager._create_adapter_for_pool_size(current_adapter, target_pool_size)
         object_storage_client.base_client.session.mount(mount_protocol, adapter)
+
+    @staticmethod
+    def _create_adapter_for_pool_size(current_adapter, target_pool_size):
+        """Create a larger adapter while preserving adapter type and key settings."""
+        # Missing attributes are treated as default requests adapter settings.
+        # This preserves compatibility with user-mounted custom adapters while
+        # avoiding assumptions about their internal implementation.
+        pool_connections = getattr(current_adapter, '_pool_connections', requests.adapters.DEFAULT_POOLSIZE)
+        pool_block = getattr(current_adapter, '_pool_block', requests.adapters.DEFAULT_POOLBLOCK)
+        max_retries = getattr(current_adapter, 'max_retries', requests.adapters.DEFAULT_RETRIES)
+
+        # OCIHTTPAdapter sets this marker so resizing preserves OCI's scoped
+        # Expect-header transport behavior instead of replacing it with a plain
+        # HTTPAdapter.
+        if getattr(current_adapter, 'uses_oci_connection_pool', False):
+            return current_adapter.__class__(
+                pool_connections=pool_connections,
+                pool_maxsize=target_pool_size,
+                max_retries=max_retries,
+                pool_block=pool_block
+            )
+
+        return requests.adapters.HTTPAdapter(
+            pool_connections=pool_connections,
+            pool_maxsize=target_pool_size,
+            max_retries=max_retries,
+            pool_block=pool_block
+        )
 
     @staticmethod
     def _use_multipart(content_length, part_size=DEFAULT_PART_SIZE):

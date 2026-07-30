@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 """
@@ -104,7 +104,7 @@ def from_file(file_location=DEFAULT_LOCATION, profile_name=DEFAULT_PROFILE):
 
     parser = configparser.ConfigParser(interpolation=None)
     if not parser.read(expanded_file_location):
-        raise ConfigFileNotFound("Could not find config file at {}, please follow the instructions in the link to setup the config file https://docs.cloud.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm".format(expanded_file_location))
+        raise ConfigFileNotFound("Could not find config file at {}, please follow the instructions in the link to setup the config file https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm".format(expanded_file_location))
 
     if profile_name not in parser:
         raise ProfileNotFound("Profile '{}' not found in config file {} ".format(profile_name, expanded_file_location) + CONFIG_FILE_DEBUG_INFORMATION_LOG)

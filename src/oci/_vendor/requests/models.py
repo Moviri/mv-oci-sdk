@@ -1,5 +1,5 @@
 # coding: utf-8
-# Modified Work: Copyright (c) 2018, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Modified Work: Copyright (c) 2018, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 # Copyright 2018 Kenneth Reitz
 
@@ -20,10 +20,10 @@ import sys
 # such as in Embedded Python. See https://github.com/psf/requests/issues/3578.
 import encodings.idna
 
-from oci._vendor.urllib3.fields import RequestField
-from oci._vendor.urllib3.filepost import encode_multipart_formdata
-from oci._vendor.urllib3.util import parse_url
-from oci._vendor.urllib3.exceptions import (
+from urllib3.fields import RequestField
+from urllib3.filepost import encode_multipart_formdata
+from urllib3.util import parse_url
+from urllib3.exceptions import (
     DecodeError, ReadTimeoutError, ProtocolError, LocationParseError)
 
 from io import UnsupportedOperation

@@ -1,5 +1,5 @@
 # coding: utf-8
-# Modified Work: Copyright (c) 2018, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Modified Work: Copyright (c) 2018, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 # Copyright 2018 Kenneth Reitz
 
@@ -11,7 +11,7 @@ requests.exceptions
 
 This module contains the set of Requests' exceptions.
 """
-from oci._vendor.urllib3.exceptions import HTTPError as BaseHTTPError
+from urllib3.exceptions import HTTPError as BaseHTTPError
 
 from oci._vendor.requests.compat import JSONDecodeError as CompatJSONDecodeError
 

@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 # Contains classes for defining and building circuit breaker strategies.
@@ -11,7 +11,7 @@ from oci.exceptions import TransientServiceError
 logger = logging.getLogger(__name__)
 
 DEFAULT_CIRCUIT_BREAKER_FAILURE_STATUSES_AND_CODES = {
-    409: ['IncorrectState'],
+    409: ['IncorrectState', 'LockConflict'],
     429: [],
     500: [],
     502: [],
@@ -43,7 +43,7 @@ class CircuitBreakerStrategy(object):
 
             defaults to:
             {
-                409: ['IncorrectState'],
+                409: ['IncorrectState', 'LockConflict'],
                 429: [],
                 500: [],
                 502: [],

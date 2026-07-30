@@ -1,5 +1,5 @@
 # coding: utf-8
-# Modified Work: Copyright (c) 2018, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Modified Work: Copyright (c) 2018, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 # Copyright 2018 Kenneth Reitz
 
@@ -25,8 +25,8 @@ import tempfile
 import warnings
 import zipfile
 from collections import OrderedDict
-from oci._vendor.urllib3.util import make_headers
-from oci._vendor.urllib3.util import parse_url
+from urllib3.util import make_headers
+from urllib3.util import parse_url
 
 from .__version__ import __version__
 from . import certs
@@ -1063,12 +1063,3 @@ def rewind_body(prepared_request):
                                         "body for redirect.")
     else:
         raise UnrewindableBodyError("Unable to rewind request body for redirect.")
-
-def create_proxy_url_log_safe(proxy: str | dict | OrderedDict) -> str:
-    if type(proxy) == str:
-        return re.sub(r"(\w+://.+?:).+(@.+)", r"\1*****\2", proxy)
-    if type(proxy) == dict or type(proxy) == OrderedDict:
-        for key, value in proxy.items():
-            proxy[key] = create_proxy_url_log_safe(value)
-        return proxy
-    return proxy

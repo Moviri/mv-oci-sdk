@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 from . import auth_utils
@@ -17,7 +17,24 @@ import pprint
 
 from oci.circuit_breaker import CircuitBreakerStrategy, NoCircuitBreakerStrategy
 from circuitbreaker import CircuitBreakerMonitor
+from oci.version import __version__
+from oci import constants
+from oci._log_redaction import redact_sensitive_data_for_logs, redact_sensitive_string_for_logs
+import platform
+import os
 import random
+
+APPEND_USER_AGENT_ENV_VAR_NAME = "OCI_SDK_APPEND_USER_AGENT"
+APPEND_USER_AGENT = os.environ.get(APPEND_USER_AGENT_ENV_VAR_NAME)
+USER_INFO = f"Oracle-PythonSDK/{__version__}"
+
+
+def build_user_agent():
+    agent = f'{USER_INFO} (python {platform.python_version()}; {platform.machine()}-{platform.system()})'
+    agent = agent.strip()
+    if APPEND_USER_AGENT:
+        agent = f"{agent} {APPEND_USER_AGENT}"
+    return agent
 
 
 class X509FederationClient(object):
@@ -134,6 +151,7 @@ class X509FederationClient(object):
         self._set_circuit_breaker_strategy(circuit_breaker_strategy=kwargs.get('circuit_breaker_strategy'))
 
         self.requests_session = requests.Session()
+        self.user_agent = build_user_agent()
 
     def _set_circuit_breaker_strategy(self, circuit_breaker_strategy):
         self.circuit_breaker_strategy = circuit_breaker_strategy
@@ -209,17 +227,23 @@ class X509FederationClient(object):
         fingerprint = ":".join("{:02X}".format(ch) for ch in bytearray(certificate.fingerprint(SHA1())))
         signer = AuthTokenRequestSigner(self.tenancy_id, fingerprint, self.leaf_certificate_retriever)
 
-        self.logger.debug("Requesting token from : %s " % (self.federation_endpoint))
-        response = self.requests_session.post(self.federation_endpoint, json=request_payload, auth=signer, verify=self.cert_bundle_verify, timeout=(10, 60))
+        self.logger.debug("Requesting token from : %s " % self.federation_endpoint)
+        response = self.requests_session.post(self.federation_endpoint, json=request_payload, auth=signer, verify=self.cert_bundle_verify, timeout=(10, 60), headers={constants.HEADER_USER_AGENT: self.user_agent})
+        debug_response_data = redact_sensitive_data_for_logs({
+            "status_code": response.status_code,
+            "url": response.url,
+            "header": dict(response.headers.items()),
+            "reason": response.reason
+        })
         self.logger.debug("Receiving token response......\n{}\n".format(pprint.pformat(
-            {"status_code": response.status_code, "url": response.url, "header": dict(response.headers.items()),
-                "reason": response.reason}, indent=2)))
+            debug_response_data, indent=2)))
 
         parsed_response = None
         try:
             parsed_response = response.json()
         except ValueError:
-            error_text = 'Unable to parse response from auth service ({}): {}'.format(self.federation_endpoint, response.text)
+            redacted_response_text = redact_sensitive_string_for_logs(response.text)
+            error_text = f'Unable to parse response from auth service ({self.federation_endpoint}): {redacted_response_text}'
 
             # If the response was a 2xx but unparseable, raise it straight away because it implies a potential service issue. If
             # we have a non-2xx but it is not parseable that is a more ambiguous scenario (e.g. could have been an issue with a
@@ -248,19 +272,20 @@ class X509FederationClient(object):
                     response.status_code,
                     parsed_response.get('code'),
                     response.headers,
-                    parsed_response.get('message')
+                    redact_sensitive_string_for_logs(parsed_response.get('message'))
                 )
             raise oci.exceptions.ServiceError(
                 response.status_code,
                 parsed_response.get('code'),
                 response.headers,
-                parsed_response.get('message')
+                redact_sensitive_string_for_logs(parsed_response.get('message'))
             )
         else:
             if 'token' in parsed_response:
                 self.security_token = SecurityTokenContainer(self.session_key_supplier, response.json()['token'])
             else:
-                raise RuntimeError('Could not find token in response from auth service ({}): {}'.format(self.federation_endpoint, parsed_response))
+                redacted_response = redact_sensitive_data_for_logs(parsed_response)
+                raise RuntimeError(f'Could not find token in response from auth service ({self.federation_endpoint}): {redacted_response}')
 
 
 class AuthTokenRequestSigner(oci.signer.AbstractBaseSigner):

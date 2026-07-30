@@ -88,7 +88,19 @@ def safe_extract(archive_path: Path, destination: Path) -> None:
                 raise RuntimeError(f"Unsafe archive path: {member.name}")
             if member.issym() or member.islnk():
                 raise RuntimeError(f"Links are not allowed in the upstream archive: {member.name}")
-        archive.extractall(destination)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise RuntimeError(f"Unsupported archive member: {member.name}")
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise RuntimeError(f"Unable to read archive member: {member.name}")
+            with source, target.open("wb") as destination_file:
+                shutil.copyfileobj(source, destination_file)
+            target.chmod(member.mode & 0o777)
 
 
 def archive_selected_paths(
@@ -165,7 +177,7 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     base_client_path = REPO_ROOT / "src" / "oci" / "base_client.py"
     replace_exact(
         base_client_path,
-        "self.circuit_breaker_name = None\n",
+        "        self.circuit_breaker_name = None\n",
         "",
         "legacy circuit breaker name",
     )
@@ -186,6 +198,29 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
         "self.raise_service_error(request, response, service_code, message, operation_name, api_reference_link, target_service, request_endpoint, client_version, timestamp, deserialized_data)\n",
         "self.raise_service_error(request, response, service_code, message, operation_name, api_reference_link, target_service, request_endpoint, client_version, None, deserialized_data)\n",
         "ServiceError timestamp",
+    )
+
+    exceptions_path = REPO_ROOT / "src" / "oci" / "exceptions.py"
+    replace_exact(
+        exceptions_path,
+        '            "timestamp": self.timestamp,\n',
+        "",
+        "ServiceError timestamp output",
+    )
+
+    redaction_path = REPO_ROOT / "src" / "oci" / "_log_redaction.py"
+    replace_exact(
+        redaction_path,
+        "_SENSITIVE_LOG_PATTERNS = (\n",
+        (
+            "_SENSITIVE_LOG_PATTERNS = (\n"
+            "    # URI userinfo can contain proxy usernames and passwords.\n"
+            "    (\n"
+            "        re.compile(r\"(?i)\\b([a-z][a-z0-9+.-]*://)([^/@\\s]+)@\"),\n"
+            "        r\"\\1\" + REDACTED_VALUE + \"@\",\n"
+            "    ),\n"
+        ),
+        "URI userinfo redaction overlay",
     )
 
 

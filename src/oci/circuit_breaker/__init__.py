@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 from .circuit_breaker import CircuitBreakerStrategy, NoCircuitBreakerStrategy, DEFAULT_CIRCUIT_BREAKER_FAILURE_STATUSES_AND_CODES
@@ -15,6 +15,7 @@ logger = logging.getLogger(name=__name__)
 # * failure_threshold - 3
 # * failure_statuses_and_codes
 #    - HTTP 409/IncorrectState
+#    - HTTP 409/LockConflict
 #    - HTTP 429
 #    - HTTP 500
 #    - HTTP 502
@@ -39,6 +40,7 @@ else:
 #: * failure_statuses_and_codes
 #:
 #:    - HTTP 409/IncorrectState
+#:    - HTTP 409/LockConflict
 #:    - HTTP 429
 #:    - HTTP 500
 #:    - HTTP 502

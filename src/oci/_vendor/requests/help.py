@@ -1,5 +1,5 @@
 # coding: utf-8
-# Modified Work: Copyright (c) 2018, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Modified Work: Copyright (c) 2018, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 # Copyright 2018 Kenneth Reitz
 
@@ -10,9 +10,9 @@ import json
 import platform
 import sys
 import ssl
+import urllib3
 
 from oci._vendor import idna
-from oci._vendor import urllib3
 from oci._vendor import chardet
 
 from . import __version__ as requests_version
@@ -28,7 +28,7 @@ except ImportError:
     chardet = None
 
 try:
-    from oci._vendor.urllib3.contrib import pyopenssl
+    from urllib3.contrib import pyopenssl
 except ImportError:
     pyopenssl = None
     OpenSSL = None
