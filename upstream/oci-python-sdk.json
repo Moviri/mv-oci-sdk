@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/oracle/oci-python-sdk.git",
+  "tag": "v2.183.0",
+  "commit": "765efd50b3ac1f51dff2e24ad035ff31153d5826",
+  "moviri_version": "2.183.0.1"
+}
