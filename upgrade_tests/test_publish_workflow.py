@@ -54,7 +54,11 @@ def test_publish_is_master_only_and_consumes_validated_artifact():
     assert "uses: actions/download-artifact@v4" in publish
     assert "name: python-distributions" in publish
     assert "path: dist" in publish
-    assert "uses: pypa/gh-action-pypi-publish@release/v1" in publish
+    assert (
+        "uses: pypa/gh-action-pypi-publish@"
+        "dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2"
+        in publish
+    )
     assert "packages-dir: dist/" in publish
     assert "password: ${{ secrets.PYPI_API_TOKEN }}" in publish
     assert "actions/checkout" not in publish

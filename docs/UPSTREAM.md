@@ -67,6 +67,10 @@ The overlay is deliberately small:
   `upstream/oauth-exchange-logging-overlay.patch`. The patch removes direct
   stdout diagnostics and limits structured logs to non-secret event, status,
   request ID, signer-class, and exception-type metadata.
+- `src/oci/_vendor/requests/auth.py` is replaced by
+  `upstream/requests-auth-overlay.py`. It retains the Basic and proxy
+  authentication helpers used by the SDK while removing the unused HTTP
+  Digest handler and its legacy password-digest algorithms.
 - `src/oci/_vendor/requests/adapters.py` receives an exact transport
   transformation that uses urllib3 2.x `urlopen(..., chunked=...)` handling
   for both fixed-length and generator-backed bodies instead of the removed

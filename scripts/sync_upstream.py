@@ -36,6 +36,7 @@ TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH = (
 OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "oauth-exchange-logging-overlay.patch"
 )
+REQUESTS_AUTH_OVERLAY_PATH = REPO_ROOT / "upstream" / "requests-auth-overlay.py"
 
 
 def run_git(
@@ -393,6 +394,11 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     run_git(
         ["apply", "--unidiff-zero", str(OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH)],
         cwd=REPO_ROOT,
+    )
+
+    shutil.copy2(
+        REQUESTS_AUTH_OVERLAY_PATH,
+        REPO_ROOT / "src" / "oci" / "_vendor" / "requests" / "auth.py",
     )
 
     requests_adapter_path = (

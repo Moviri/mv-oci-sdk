@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import jwt
@@ -20,6 +21,7 @@ from oci._log_redaction import (
     redact_sensitive_string_for_logs,
 )
 from oci._vendor import requests
+from oci._vendor.requests import auth as requests_auth
 from oci.base_client import BaseClient
 from oci.circuit_breaker import CircuitBreakerStrategy, NoCircuitBreakerStrategy
 from circuitbreaker import CircuitBreakerMonitor
@@ -28,6 +30,9 @@ from oci.exceptions import ServiceError, TransientServiceError
 from oci.request import Request
 from oci.response import Response
 from oci.signer import Signer
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def valid_config(key_file):
@@ -192,6 +197,30 @@ def test_api_key_configuration_and_request_signing(tmp_path):
     assert signed_request.headers["authorization"].startswith("Signature ")
     assert signed_request.headers["date"]
     assert signed_request.headers["host"] == "iaas.example.com"
+
+
+def test_vendored_requests_retains_basic_auth_without_digest_auth():
+    source = inspect.getsource(requests_auth)
+    request = requests.Request("GET", "https://example.com").prepare()
+    proxy_request = requests.Request("GET", "https://example.com").prepare()
+
+    requests_auth.HTTPBasicAuth("user", "password")(request)
+    requests_auth.HTTPProxyAuth("proxy-user", "proxy-password")(proxy_request)
+
+    assert request.headers["Authorization"] == "Basic dXNlcjpwYXNzd29yZA=="
+    assert (
+        proxy_request.headers["Proxy-Authorization"]
+        == "Basic cHJveHktdXNlcjpwcm94eS1wYXNzd29yZA=="
+    )
+    assert not hasattr(requests_auth, "HTTPDigestAuth")
+    assert "hashlib.md5" not in source
+    assert "hashlib.sha1" not in source
+    assert (
+        Path(requests_auth.__file__).read_text(encoding="utf-8")
+        == (ROOT / "upstream" / "requests-auth-overlay.py").read_text(
+            encoding="utf-8"
+        )
+    )
 
 
 def test_openssl_3_fips_guard_does_not_load_legacy_libcrypto(monkeypatch):

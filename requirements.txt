@@ -11,5 +11,5 @@ crc32c==2.8.0
 # Local validation and release tooling.
 build>=1.2,<2
 pip-audit>=2.9,<3
-pytest>=8,<10
+pytest>=9.0.3,<10
 twine>=6,<7

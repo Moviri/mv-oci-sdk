@@ -144,6 +144,8 @@ def test_dependency_and_build_safety_floors():
         assert str(requirements["cryptography"].specifier) == "<50.0.0,>=46.0.5"
         assert str(requirements["pyopenssl"].specifier) == "<27.0.0,>=26.0.0"
 
+    assert str(readable_requirements["pytest"].specifier) == "<10,>=9.0.3"
+
     build_metadata = tomllib.loads(
         (root / "pyproject.toml").read_text(encoding="utf-8")
     )
