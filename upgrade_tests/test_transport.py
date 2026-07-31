@@ -18,7 +18,6 @@ from oci.base_client import (
     OCIPoolManager,
     OCIProxyManager,
 )
-from oci.object_storage.transfer.upload_manager import UploadManager
 from oci.request import Request
 
 
@@ -199,16 +198,6 @@ def test_adapter_translates_urllib3_protocol_errors():
     ):
         with pytest.raises(requests.exceptions.ConnectionError):
             adapter.send(prepared_request)
-
-
-def test_object_storage_pool_resize_preserves_oci_adapter():
-    current = OCIHTTPAdapter(pool_connections=7, pool_maxsize=10, pool_block=True)
-    resized = UploadManager._create_adapter_for_pool_size(current, 32)
-
-    assert isinstance(resized, OCIHTTPAdapter)
-    assert resized._pool_connections == 7
-    assert resized._pool_maxsize == 32
-    assert resized._pool_block is True
 
 
 def test_header_parsing_error_recovers_after_one_session_reset(monkeypatch):

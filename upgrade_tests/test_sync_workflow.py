@@ -91,11 +91,45 @@ def test_upstream_verification_rejects_mismatched_tag_and_commit(
 def test_selected_manifest_paths_exist_after_sync():
     sync = load_sync_module()
     selected_paths = sync.read_path_list(ROOT / "upstream" / "selected-paths.txt")
+    prune_paths = sync.read_path_list(ROOT / "upstream" / "prune-paths.txt")
 
     assert selected_paths
     assert all((ROOT / relative_path).exists() for relative_path in selected_paths)
     assert "src/oci/_vendor/urllib3" not in selected_paths
     assert "src/oci/_vendor/jwt" not in selected_paths
+    selected_package_directories = {
+        path.removeprefix("src/oci/")
+        for path in selected_paths
+        if path.startswith("src/oci/")
+        and "/" not in path.removeprefix("src/oci/")
+        and "." not in path.removeprefix("src/oci/")
+    }
+    assert selected_package_directories == {
+        "_vendor",
+        "auth",
+        "circuit_breaker",
+        "core",
+        "dns",
+        "file_storage",
+        "functions",
+        "identity",
+        "load_balancer",
+        "monitoring",
+        "network_load_balancer",
+        "object_storage",
+        "pagination",
+        "retry",
+    }
+    for service in (
+        "database",
+        "database_management",
+        "database_tools",
+        "queue",
+        "work_requests",
+    ):
+        path = f"src/oci/{service}"
+        assert path not in selected_paths
+        assert path in prune_paths
 
 
 def test_workflow_has_no_implicit_moving_branch_default():

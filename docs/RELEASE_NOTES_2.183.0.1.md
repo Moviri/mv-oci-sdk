@@ -25,15 +25,11 @@ release. The consumer dependency on the unrelated `jwt` distribution must
 also be removed or replaced with `PyJWT`; both distributions must not be
 installed together merely because they expose the same top-level module.
 
-## Curated services
+## Curated extension surface
 
-Retained service packages:
+Public service packages used by `python-oci-compute`:
 
 - `core`
-- `database`
-- `database_management`
-- `database_tools`
-- `dns`
 - `file_storage`
 - `functions`
 - `identity`
@@ -41,13 +37,18 @@ Retained service packages:
 - `monitoring`
 - `network_load_balancer`
 - `object_storage`
-- `queue`
-- `work_requests`
 
-All other Oracle service packages remain excluded. Common authentication,
-pagination, retry, circuit-breaker, transport, signing, configuration, region,
-and waiter code is retained through the version-controlled selected-path
-manifest.
+`dns` models remain packaged but are not advertised as a public service; the
+pagination helper imports `RecordCollection` and `RRSet` for type-sensitive
+aggregation. The unused DNS client is excluded. All other Oracle service
+packages remain excluded. Common authentication,
+pagination, retry, circuit-breaker, transport, signing, configuration, and
+region code remains because it is imported by the retained clients.
+
+Unused generated clients and composite-operation wrappers, Object Storage
+transfer helpers, and the standalone waiter are also excluded. Models and type
+mappings remain intact where pagination or the retained generated clients
+import them for aggregation and response deserialization.
 
 ## Moviri patch disposition
 
@@ -65,8 +66,7 @@ manifest.
 
 This baseline includes Oracle's bounded `HeaderParsingError` recovery,
 session-scoped OCI HTTP adapter, OpenSSL 3 FIPS guard, and sensitive-data
-redaction. It no longer mutates urllib3's process-wide pool mapping and it
-preserves the OCI adapter when Object Storage resizes a connection pool.
+redaction. It no longer mutates urllib3's process-wide pool mapping.
 
 The remediation also restores generator-backed chunked requests on external
 urllib3 2.x, gives `TokenExchangeSigner` the existing one-time 401 refresh
@@ -74,8 +74,7 @@ behavior, requires HTTPS with finite exchange timeouts, and prevents token
 exchange credentials or response bodies from entering logs. OAuth exchange
 diagnostics also omit user-controlled endpoint URLs, response details,
 exception text, token state, and key fingerprints while retaining safe status
-and event metadata. The Managed MySQL composite operation can now poll its
-Database Management work request through a generated-style client operation.
+and event metadata.
 
 Synchronization rejects unsafe manifest targets before any repository
 mutation. Manual publication validates Python 3.10 through 3.13, builds and
@@ -84,16 +83,15 @@ checks one artifact, and permits only a protected `pypi` environment on
 
 ## Validation results
 
-The original remediation suite passed all 90 tests on Python 3.10.20,
-3.11.15, 3.12.13, and 3.13.13. Five OAuth logging regressions extend the
-suite to 95 tests; the complete updated suite passed on Python 3.12.13.
+The complete reduced-surface suite passed all 107 tests on Python 3.10.20,
+3.11.15, 3.12.13, and 3.13.13.
 
 | Check | Result |
 | --- | --- |
-| Focused remediations | R1 through R8 regressions passed, including circuit-breaker disabled paths, urllib3 2.x chunked transport, token exchange refresh/security, OAuth logging confidentiality, Managed MySQL polling, sync path safety, hermetic tag verification, and publication contracts. |
+| Focused remediations | R1 through R8 regressions passed, including circuit-breaker disabled paths, urllib3 2.x chunked transport, token exchange refresh/security, OAuth logging confidentiality, exact consumer package boundaries, sync path safety, hermetic tag verification, and publication contracts. |
 | Packaged imports | Every module in the built `oci` package imported successfully. |
 | Reproducible synchronization | Two consecutive syncs from the recorded Oracle tag and commit produced no diff after the first replay. |
-| Fresh no-tags clone | The complete 90-test upgrade suite passed from a fresh Moviri clone created without tags. |
+| Fresh no-tags clone | The complete 107-test upgrade suite passed from a fresh Moviri clone created without tags. |
 | Source compilation | `python -m compileall -q src/oci` passed. |
 | Source and wheel build | Passed with `python -m build`. |
 | Distribution metadata | Both artifacts passed `twine check`. |
@@ -102,10 +100,18 @@ suite to 95 tests; the complete updated suite passed on Python 3.12.13.
 | Dependency audit | No known vulnerabilities were reported for the installed external dependencies. The private `mv-oci-sdk` distribution was not present in the public advisory index; retained vendored libraries are listed in `upstream/vendored-dependencies.txt`. |
 | Credentialed OCI smoke collection | Not run because no OCI configuration or test-tenancy credentials were available. |
 
-Earlier external upgrade validation was not rerun during this remediation:
+External consumer validation:
 
-- `python-oci-compute` previously passed all 74 tests against the local
+- `python-oci-compute` passed all 74 tests against the installed reduced
   2.183.0.1 wheel on Python 3.12.13.
+- The consumer's complete operation and model imports succeeded against the
+  reduced source tree before wheel validation.
+- The consumer's existing metadata leaves one expected `pip check` failure for
+  its undeclared `jwt` import; the isolated SDK wheel environment has no broken
+  requirements.
+
+Earlier extension-package validation was not rerun during this remediation:
+
 - `dt-sdk build` previously produced a signed 13,298,137-byte extension after
   the documented Python 3.10 and PyJWT adoption changes were applied to an
   isolated consumer copy.
@@ -114,21 +120,22 @@ Artifact sizes:
 
 | Artifact | Size |
 | --- | ---: |
-| `mv-oci-sdk` 2.183.0.1 wheel | 7,155,650 bytes |
-| `mv-oci-sdk` 2.183.0.1 source distribution | 3,643,714 bytes |
-| Installed `oci` directory, including generated bytecode | 92,286,540 bytes |
-| Installed `oci` source payload, excluding generated bytecode | 46,001,657 bytes |
+| `mv-oci-sdk` 2.183.0.1 wheel | 3,312,867 bytes |
+| `mv-oci-sdk` 2.183.0.1 source distribution | 1,718,048 bytes |
+| Installed `oci` directory, including generated bytecode | 38,445,090 bytes |
+| Installed `oci` source payload, excluding generated bytecode | 19,332,014 bytes |
 | Earlier signed `python-oci-compute` extension | 13,298,137 bytes |
 
-The wheel is below the 8 MB acceptance ceiling. The signed extension has 46.8%
+The wheel has 58.59% headroom below the 8 MB acceptance ceiling. The earlier
+signed extension has 46.8%
 headroom under the current
 [25 MB Dynatrace extension-package limit](https://docs.dynatrace.com/docs/ingest-from/extensions/extension-limits).
 
-The previous `mv-oci-sdk` 2.142.0.13 wheel is 6,004,579 bytes, so the new wheel
-is 1,151,071 bytes (19.17%) larger. The increase is explained by generated API
-growth within the unchanged retained-service manifest, concentrated in
-`database`, `database_management`, `core`, and `database_tools`; no additional
-Oracle service package was added to meet the upgrade.
+The previous `mv-oci-sdk` 2.142.0.13 wheel is 6,004,579 bytes, so the curated
+2.183.0.1 wheel is 2,691,712 bytes (44.83%) smaller. It is also 3,842,783 bytes
+(53.70%) smaller than the unpruned 7,155,650-byte 2.183.0.1 review build. The
+remaining generated growth is limited to the eight consumer service clients,
+their response models, and the common code they import.
 
 The checked-in `python-oci-compute` metadata still requires its separate
 adoption change: replace `jwt` with `PyJWT`, pin or constrain this SDK release,

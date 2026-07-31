@@ -23,7 +23,6 @@ from .request import Request
 from .response import Response
 from .signer import Signer
 from .version import __version__  # noqa
-from .waiter import wait_until
 
 
 fips.enable_fips_mode()
@@ -38,7 +37,6 @@ _COMMON_EXPORTS = [
     "decorators",
     "exceptions",
     "regions",
-    "wait_until",
     "pagination",
     "auth",
     "retry",
@@ -49,10 +47,6 @@ _COMMON_EXPORTS = [
 
 _RETAINED_SERVICES = [
     "core",
-    "database",
-    "database_management",
-    "database_tools",
-    "dns",
     "file_storage",
     "functions",
     "identity",
@@ -60,8 +54,6 @@ _RETAINED_SERVICES = [
     "monitoring",
     "network_load_balancer",
     "object_storage",
-    "queue",
-    "work_requests",
 ]
 
 if os.getenv("OCI_PYTHON_SDK_NO_SERVICE_IMPORTS", "").lower() not in ["true", "1"]:
@@ -83,10 +75,6 @@ if os.getenv("OCI_PYTHON_SDK_NO_SERVICE_IMPORTS", "").lower() not in ["true", "1
     else:
         from . import (  # noqa: F401
             core,
-            database,
-            database_management,
-            database_tools,
-            dns,
             file_storage,
             functions,
             identity,
@@ -94,6 +82,4 @@ if os.getenv("OCI_PYTHON_SDK_NO_SERVICE_IMPORTS", "").lower() not in ["true", "1
             monitoring,
             network_load_balancer,
             object_storage,
-            queue,
-            work_requests,
         )

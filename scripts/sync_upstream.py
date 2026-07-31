@@ -18,14 +18,23 @@ METADATA_PATH = REPO_ROOT / "upstream" / "oci-python-sdk.json"
 MANIFEST_PATH = REPO_ROOT / "upstream" / "selected-paths.txt"
 PRUNE_PATH = REPO_ROOT / "upstream" / "prune-paths.txt"
 INIT_OVERLAY_PATH = REPO_ROOT / "upstream" / "oci-init-overlay.py"
+SERVICE_INIT_OVERLAY_DIR = REPO_ROOT / "upstream" / "service-init-overlays"
+SERVICE_INIT_OVERLAYS = (
+    "core",
+    "dns",
+    "file_storage",
+    "functions",
+    "identity",
+    "load_balancer",
+    "monitoring",
+    "network_load_balancer",
+    "object_storage",
+)
 TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "token-exchange-signer-overlay.py"
 )
 OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "oauth-exchange-logging-overlay.patch"
-)
-MANAGED_MYSQL_WORK_REQUEST_OVERLAY_PATH = (
-    REPO_ROOT / "upstream" / "managed-mysql-get-work-request-overlay.py"
 )
 
 
@@ -281,6 +290,11 @@ def replace_between(
 
 def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     shutil.copy2(INIT_OVERLAY_PATH, REPO_ROOT / "src" / "oci" / "__init__.py")
+    for service in SERVICE_INIT_OVERLAYS:
+        shutil.copy2(
+            SERVICE_INIT_OVERLAY_DIR / f"{service}.py",
+            REPO_ROOT / "src" / "oci" / service / "__init__.py",
+        )
 
     version_path = REPO_ROOT / "src" / "oci" / "version.py"
     replace_exact(
@@ -413,25 +427,6 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
         ),
         "urllib3 2.x request dispatch",
     )
-
-    managed_mysql_client_path = (
-        REPO_ROOT
-        / "src"
-        / "oci"
-        / "database_management"
-        / "managed_my_sql_databases_client.py"
-    )
-    replace_exact(
-        managed_mysql_client_path,
-        "    def list_high_availability_members(self, managed_my_sql_database_id, **kwargs):\n",
-        (
-            MANAGED_MYSQL_WORK_REQUEST_OVERLAY_PATH.read_text(encoding="utf-8")
-            + "\n"
-            + "    def list_high_availability_members(self, managed_my_sql_database_id, **kwargs):\n"
-        ),
-        "Managed MySQL work-request operation",
-    )
-
 
 def print_summary() -> None:
     status = run_git(

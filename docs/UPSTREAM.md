@@ -11,13 +11,12 @@ The immutable upstream release is recorded in
 `upstream/selected-paths.txt`. The synchronization script also removes the
 legacy paths in `upstream/prune-paths.txt`.
 
-The retained service boundary follows the repository's existing pruning
-history. Commit `599f63a` retained `core`, `database`,
-`database_management`, `database_tools`, `dns`, `identity`, `monitoring`,
-`object_storage`, `queue`, and `work_requests`. The current
-`python-oci-compute` consumer additionally imports `file_storage`, `functions`,
-`load_balancer`, and `network_load_balancer`. The selected-path manifest is the
-exact union of those service sets; all other Oracle service packages remain
+The retained boundary is defined exclusively by the `python-oci-compute`
+extension. Its public service packages are `core`, `file_storage`, `functions`,
+`identity`, `load_balancer`, `monitoring`, `network_load_balancer`, and
+`object_storage`. `dns` remains packaged as an internal dependency because the
+pagination module inspects the DNS `RecordCollection` and `RRSet` models. Its
+unused generated client is excluded. All other Oracle service packages remain
 excluded.
 
 From a clean `mv-oci-sdk` worktree, run:
@@ -43,6 +42,11 @@ The overlay is deliberately small:
 - `src/oci/__init__.py` is replaced by
   `upstream/oci-init-overlay.py`, so only retained services are advertised and
   lazy-importable.
+- The retained service `__init__.py` files are replaced by the overlays in
+  `upstream/service-init-overlays/`. They export only clients used by the
+  extension and their model packages. Unused composite wrappers, the Functions
+  Invoke client, Object Storage transfer helpers, and the standalone waiter
+  are removed through `upstream/prune-paths.txt`.
 - `src/oci/version.py` receives the Moviri release suffix recorded in upstream
   metadata.
 - `ServiceError` and `TransientServiceError` are created without a timestamp,
@@ -67,12 +71,6 @@ The overlay is deliberately small:
   transformation that uses urllib3 2.x `urlopen(..., chunked=...)` handling
   for both fixed-length and generator-backed bodies instead of the removed
   `HTTPResponse.from_httplib` API.
-- `src/oci/database_management/managed_my_sql_databases_client.py` receives
-  the generated-style operation in
-  `upstream/managed-mysql-get-work-request-overlay.py`, allowing its retained
-  composite operation to poll `/workRequests/{workRequestId}` through the
-  Database Management client.
-
 All other retained SDK source comes byte-for-byte from the recorded Oracle
 commit.
 

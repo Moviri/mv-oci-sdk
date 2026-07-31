@@ -8,6 +8,7 @@ from pathlib import Path
 
 import jwt
 import oci
+import pytest
 import urllib3
 from packaging.requirements import Requirement
 
@@ -19,10 +20,6 @@ except ModuleNotFoundError:  # Python 3.10
 
 RETAINED_SERVICES = (
     "core",
-    "database",
-    "database_management",
-    "database_tools",
-    "dns",
     "file_storage",
     "functions",
     "identity",
@@ -30,6 +27,21 @@ RETAINED_SERVICES = (
     "monitoring",
     "network_load_balancer",
     "object_storage",
+)
+
+INTERNAL_PACKAGES = (
+    "_vendor",
+    "auth",
+    "circuit_breaker",
+    "dns",
+    "pagination",
+    "retry",
+)
+
+EXCLUDED_SERVICES = (
+    "database",
+    "database_management",
+    "database_tools",
     "queue",
     "work_requests",
 )
@@ -38,15 +50,50 @@ RETAINED_SERVICES = (
 def test_version_and_every_retained_service_import():
     assert oci.__version__ == "2.183.0.1"
     assert importlib.metadata.version("mv-oci-sdk") == "2.183.0.1"
+    assert oci._RETAINED_SERVICES == list(RETAINED_SERVICES)
 
     for service in RETAINED_SERVICES:
         assert importlib.import_module(f"oci.{service}") is not None
         assert service in oci.__all__
 
 
-def test_excluded_service_is_not_advertised_or_packaged():
-    assert "audit" not in oci.__all__
-    assert importlib.util.find_spec("oci.audit") is None
+def test_top_level_package_boundary_is_exact():
+    package_root = Path(oci.__file__).resolve().parent
+    packaged_directories = {
+        path.name
+        for path in package_root.iterdir()
+        if path.is_dir() and (path / "__init__.py").is_file()
+    }
+
+    assert packaged_directories == set(RETAINED_SERVICES + INTERNAL_PACKAGES)
+
+
+@pytest.mark.parametrize("service", ("audit", *EXCLUDED_SERVICES))
+def test_excluded_service_is_not_advertised_or_packaged(service):
+    assert service not in oci.__all__
+    assert importlib.util.find_spec(f"oci.{service}") is None
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "oci.waiter",
+        "oci.core.compute_client_composite_operations",
+        "oci.dns.dns_client",
+        "oci.dns.dns_client_composite_operations",
+        "oci.file_storage.file_storage_client_composite_operations",
+        "oci.functions.functions_invoke_client",
+        "oci.functions.functions_management_client_composite_operations",
+        "oci.identity.identity_client_composite_operations",
+        "oci.load_balancer.load_balancer_client_composite_operations",
+        "oci.monitoring.monitoring_client_composite_operations",
+        "oci.network_load_balancer.network_load_balancer_client_composite_operations",
+        "oci.object_storage.object_storage_client_composite_operations",
+        "oci.object_storage.transfer",
+    ),
+)
+def test_unused_optional_module_is_not_packaged(module_name):
+    assert importlib.util.find_spec(module_name) is None
 
 
 def test_every_packaged_module_imports():

@@ -7,6 +7,17 @@
   `origin/master@27828acb8845cbb6f8da95c1f71a68966d5b5e9d`
 - Reviewed head: `2f58d6b357d78cf7af1ba87a30e205055f1986d0`
 
+## Consumer-exclusive scope amendment
+
+On 2026-07-31 the repository owner clarified that `mv-oci-sdk` exists
+exclusively for `python-oci-compute`. This amendment supersedes earlier wording
+that preserved services for unaudited consumers. The final package must retain
+the extension's eight public OCI services and every proven transitive
+dependency, while pruning unrelated service packages and optional generated
+helpers. In particular, the unused Database, Database Management, Database
+Tools, Queue, and Work Requests services are removed; DNS models remain as an
+internal pagination dependency.
+
 ## Execution directive
 
 Implement this specification on the current upgrade branch. Refresh
@@ -30,7 +41,8 @@ The result must:
 - retain Oracle tag `v2.183.0` and commit
   `765efd50b3ac1f51dff2e24ad035ff31153d5826`;
 - preserve Python 3.10 through 3.13 support;
-- preserve the existing curated service list;
+- retain only the `python-oci-compute` service and transitive dependency
+  closure;
 - preserve the intentional Moviri exception-formatting, redaction, package
   initialization, versioning, and circuit-breaker behaviors;
 - encode every retained-source deviation durably so a later upstream sync does
@@ -42,8 +54,8 @@ The result must:
 Files copied from Oracle are currently expected to remain byte-for-byte equal
 to the pinned Oracle commit except for the documented Moviri overlays. A fix
 that changes synchronized source such as `src/oci/base_client.py`, the vendored
-Requests adapter, `TokenExchangeSigner`, or generated Database Management code
-must therefore be represented by one of these durable mechanisms:
+Requests adapter, `TokenExchangeSigner`, or a retained generated service
+initializer must therefore be represented by one of these durable mechanisms:
 
 1. an explicit, exact, tested transformation in `scripts/sync_upstream.py`; or
 2. a small version-controlled patch mechanism invoked by that script.
@@ -69,7 +81,7 @@ the two `TokenExchangeSigner` findings.
 | Missing 401 refresh for `TokenExchangeSigner` | R4 |
 | Repository-root deletion through sync manifests | R6 |
 | Insecure token-exchange transport and logging | R4 |
-| Broken Managed MySQL composite waiter | R5 |
+| Unused non-consumer services and generated helpers | R5 |
 | Developer-local tag dependency in sync tests | R7 |
 
 ### R1 — Fix requests with circuit breaking disabled
@@ -219,44 +231,39 @@ Acceptance criteria:
 - Successful exchange and proactive refresh still work with mocked HTTPS
   responses.
 
-### R5 — Repair the Managed MySQL composite waiter
+### R5 — Remove the unused non-consumer surface
 
 Priority: P2, required before merge
 
 Affected paths:
 
-- `src/oci/database_management/managed_my_sql_databases_client.py`
-- `src/oci/database_management/managed_my_sql_databases_client_composite_operations.py`
-- the durable sync overlay or patch mechanism
-- a focused upgrade test
+- `upstream/selected-paths.txt`
+- `upstream/prune-paths.txt`
+- `scripts/sync_upstream.py`
+- package-surface and synchronization tests
 
 Required behavior:
 
-- `change_mysql_database_management_type_and_wait_for_state()` must call a real
-  work-request operation instead of an absent method.
-- Add the generated-style `GET /workRequests/{workRequestId}` operation already
-  used by `DbManagementClient` to `ManagedMySqlDatabasesClient`; both clients
-  use the Database Management endpoint and API base path.
-- If concrete service-contract evidence contradicts that implementation, stop
-  and report the evidence instead of introducing a secondary client lifecycle
-  or silently changing the public composite method.
-- Preserve the existing immediate-return behavior when wait states are empty
-  or `opc-work-request-id` is absent.
-- Preserve `CompositeOperationError` and its original partial result when
-  polling fails.
+- Remove Database, Database Management, Database Tools, Queue, and Work
+  Requests because the sole consumer does not import or construct them.
+- Remove the obsolete Managed MySQL overlay and focused waiter tests.
+- Remove unused composite-operation wrappers, the Functions Invoke client,
+  Object Storage transfer helpers, and the standalone waiter.
+- Encode the deletion in the selected and pruned path manifests so an upstream
+  synchronization cannot restore it.
+- Preserve the DNS `RecordCollection` and `RRSet` models because pagination
+  imports them, while removing the unused generated DNS client.
+- Preserve common authentication, signing, configuration, pagination, retry,
+  circuit-breaker, transport, and model code required by retained clients.
 
 Acceptance criteria:
 
-- With wait states and a work-request ID, the composite polls a valid operation
-  and returns the completed work request.
-- Empty wait states return the original operation response.
-- A response without the work-request header returns the original operation
-  response.
-- A polling failure is wrapped in `CompositeOperationError` with the original
-  result in `partial_results`.
-- A structural regression test verifies that every
-  `self.client.<method>()` call in retained composite clients exists on the
-  corresponding wrapped client.
+- All five removed service families and optional helpers are absent from the
+  source tree and wheel; only the eight consumer services appear in
+  `oci.__all__`.
+- Repeat synchronization does not restore the removed service.
+- Every retained service and packaged module imports successfully.
+- The complete `python-oci-compute` operation and model contract remains valid.
 
 ### R6 — Make synchronization path handling fail-safe
 
@@ -434,7 +441,8 @@ it still prevents legacy test collection.
 ## Non-goals
 
 - Upgrading beyond Oracle OCI Python SDK `2.183.0`.
-- Adding or removing curated OCI service packages.
+- Adding OCI service packages outside the consumer dependency closure.
+- Rewriting individual methods inside retained generated client classes.
 - Redesigning the SDK's public API or client lifecycle.
 - Replacing the retained vendored Requests layer.
 - Reintroducing vendored urllib3 or PyJWT.

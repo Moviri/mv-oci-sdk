@@ -4,9 +4,6 @@ src/oci/_vendor
 src/oci/auth
 src/oci/circuit_breaker
 src/oci/core
-src/oci/database
-src/oci/database_management
-src/oci/database_tools
 src/oci/dns
 src/oci/file_storage
 src/oci/functions
@@ -16,9 +13,7 @@ src/oci/monitoring
 src/oci/network_load_balancer
 src/oci/object_storage
 src/oci/pagination
-src/oci/queue
 src/oci/retry
-src/oci/work_requests
 src/oci/_log_redaction.py
 src/oci/base_client.py
 src/oci/config.py
@@ -35,5 +30,4 @@ src/oci/service_endpoints.py
 src/oci/signer.py
 src/oci/util.py
 src/oci/version.py
-src/oci/waiter.py
 src/oci/__init__.py
