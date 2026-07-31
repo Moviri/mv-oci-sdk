@@ -46,6 +46,7 @@ import pprint
 import threading
 import time
 import typing
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -152,12 +153,38 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
     def _set_oauth_token_endpoint(self, oauth_token_endpoint):
         if not oauth_token_endpoint:
             oauth_token_endpoint = self._fetch_oauth_token_endpoint()
-        self.oauth_token_endpoint = oauth_token_endpoint
+        self.oauth_token_endpoint = self._validate_oauth_token_endpoint(
+            oauth_token_endpoint
+        )
         self.logger.debug(
             "%s OAuth endpoint configured token_signer=%s",
             self.LOG_PREFIX,
             self._token_signer_name(),
         )
+
+    @staticmethod
+    def _validate_oauth_token_endpoint(oauth_token_endpoint):
+        if not isinstance(oauth_token_endpoint, str) or not oauth_token_endpoint:
+            raise ValueError("oauth_token_endpoint must be an absolute HTTPS URL")
+        if any(character.isspace() or ord(character) < 32 for character in oauth_token_endpoint):
+            raise ValueError("oauth_token_endpoint must be an absolute HTTPS URL")
+
+        try:
+            parsed_endpoint = urlsplit(oauth_token_endpoint)
+            parsed_endpoint.port
+        except ValueError as error:
+            raise ValueError(
+                "oauth_token_endpoint must include a valid HTTPS hostname and optional port"
+            ) from error
+
+        if parsed_endpoint.scheme.lower() != "https" or not parsed_endpoint.hostname:
+            raise ValueError("oauth_token_endpoint must be an absolute HTTPS URL")
+        if parsed_endpoint.username is not None or parsed_endpoint.password is not None:
+            raise ValueError("oauth_token_endpoint must not contain userinfo")
+        if "?" in oauth_token_endpoint or "#" in oauth_token_endpoint:
+            raise ValueError("oauth_token_endpoint must not contain a query or fragment")
+
+        return oauth_token_endpoint
 
     @staticmethod
     def _fetch_oauth_token_endpoint():

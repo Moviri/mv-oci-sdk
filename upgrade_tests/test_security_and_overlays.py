@@ -494,10 +494,7 @@ def oauth_response(*, status_code, ok, url, reason, request_id="request-id"):
 
 def test_oauth_exchange_endpoint_logging_omits_user_controlled_url(caplog, capsys):
     signer = make_oauth_exchange_signer()
-    endpoint = (
-        "https://endpoint-user-sentinel:endpoint-password-sentinel@"
-        "identity.example.com/oauth?token=endpoint-query-sentinel"
-    )
+    endpoint = "https://identity.example.com/endpoint-path-sentinel"
 
     with caplog.at_level(logging.DEBUG):
         signer._set_oauth_token_endpoint(endpoint)
@@ -507,12 +504,61 @@ def test_oauth_exchange_endpoint_logging_omits_user_controlled_url(caplog, capsy
     assert "OAuth endpoint configured" in messages
     for sentinel in (
         endpoint,
-        "endpoint-user-sentinel",
-        "endpoint-password-sentinel",
-        "endpoint-query-sentinel",
+        "endpoint-path-sentinel",
     ):
         assert sentinel not in messages
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "http://identity.example.com/oauth",
+        "ftp://identity.example.com/oauth",
+        "identity.example.com/oauth",
+        "https:///oauth",
+        "https://user:password@identity.example.com/oauth",
+        "https://identity.example.com:not-a-port/oauth",
+        "https://identity.example.com/oauth?scope=secret",
+        "https://identity.example.com/oauth#fragment",
+        "https://identity example.com/oauth",
+    ),
+)
+def test_oauth_exchange_rejects_invalid_endpoint_before_session_use(endpoint):
+    signer = make_oauth_exchange_signer()
+
+    with (
+        patch("oci.auth.signers.oauth_exhange_token_signer.requests.Session") as session_factory,
+        pytest.raises(ValueError, match="oauth_token_endpoint"),
+    ):
+        signer._set_oauth_token_endpoint(endpoint)
+
+    session_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "https://identity.example.com/oauth",
+        "https://identity.example.com:8443/custom/oauth/path",
+    ),
+)
+def test_oauth_exchange_preserves_valid_custom_https_endpoint(endpoint):
+    signer = make_oauth_exchange_signer()
+
+    signer._set_oauth_token_endpoint(endpoint)
+
+    assert signer.oauth_token_endpoint == endpoint
+
+
+def test_oauth_exchange_validates_auto_discovered_https_endpoint():
+    signer = make_oauth_exchange_signer()
+    endpoint = "https://auth.us-phoenix-1.oraclecloud.com/v1/oauth2/scoped"
+
+    with patch.object(signer, "_fetch_oauth_token_endpoint", return_value=endpoint):
+        signer._set_oauth_token_endpoint(None)
+
+    assert signer.oauth_token_endpoint == endpoint
 
 
 def test_oauth_exchange_exception_logging_omits_exception_text(caplog, capsys):

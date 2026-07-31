@@ -1,3 +1,6 @@
+import http.client
+import io
+import logging
 import os
 import subprocess
 import sys
@@ -9,15 +12,17 @@ import pytest
 import urllib3
 from urllib3.exceptions import HeaderParsingError, ProtocolError
 
-from oci import constants, exceptions
+from oci import constants, exceptions, retry
 from oci._vendor import requests
 from oci.base_client import (
     BaseClient,
+    OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME,
     OCIConnectionPool,
     OCIHTTPAdapter,
     OCIPoolManager,
     OCIProxyManager,
 )
+from oci.monitoring import MonitoringClient
 from oci.request import Request
 
 
@@ -62,21 +67,23 @@ def valid_config():
     }
 
 
-def make_client():
+def make_client(log_requests=False):
+    config = valid_config()
+    config["log_requests"] = log_requests
     return BaseClient(
         "test",
-        valid_config(),
+        config,
         Mock(),
         {},
         service_endpoint="https://example.com",
     )
 
 
-def successful_response():
+def successful_response(status_code=200, headers=None, content=b""):
     response = Mock()
-    response.status_code = 200
-    response.headers = {}
-    response.content = b""
+    response.status_code = status_code
+    response.headers = headers or {}
+    response.content = content
     response.elapsed = 0
     return response
 
@@ -200,63 +207,324 @@ def test_adapter_translates_urllib3_protocol_errors():
             adapter.send(prepared_request)
 
 
-def test_header_parsing_error_recovers_after_one_session_reset(monkeypatch):
+def test_header_parsing_error_is_single_attempt_for_rewindable_put(monkeypatch):
+    client = make_client()
+    old_session = MagicMock()
+    new_session = MagicMock()
+    body = io.BytesIO(b"payload")
+    observed_bodies = []
+
+    def fail_after_consuming_body(*args, **kwargs):
+        observed_bodies.append(kwargs["data"].read())
+        raise HeaderParsingError(
+            ["Authorization: Bearer first-secret"],
+            b"",
+        )
+
+    old_session.request.side_effect = fail_after_consuming_body
+    client.session = old_session
+    monkeypatch.setattr("oci.base_client.copy.copy", Mock(return_value=new_session))
+
+    request = Request(
+        "PUT",
+        "https://example.com/resource",
+        header_params={constants.HEADER_REQUEST_ID: "request-id"},
+        body=body,
+    )
+    with pytest.raises(exceptions.RequestException):
+        client.request(request)
+
+    assert observed_bodies == [b"payload"]
+    assert old_session.request.call_count == 1
+    new_session.request.assert_not_called()
+    assert client.session is new_session
+    old_session.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("method", ("POST", "PUT", "PATCH", "DELETE"))
+def test_header_parsing_error_is_single_shot_and_redacted_for_unsafe_methods(
+    monkeypatch,
+    method,
+):
     client = make_client()
     old_session = MagicMock()
     new_session = MagicMock()
     old_session.request.side_effect = HeaderParsingError(
-        ["Authorization: Bearer first-secret"],
+        ["Proxy-Authorization: Basic cHJveHk6c2VjcmV0"],
         b"",
     )
-    new_session.request.return_value = successful_response()
     client.session = old_session
+    monkeypatch.setenv("OCI_HEADER_PARSING_ERROR_MAX_RETRIES", "100")
     monkeypatch.setattr("oci.base_client.copy.copy", Mock(return_value=new_session))
-
-    response = client.request(sdk_request())
-
-    assert response.status == 200
-    assert client.session is new_session
-    old_session.close.assert_called_once_with()
-    new_session.request.assert_called_once()
-
-
-def test_header_parsing_error_exhaustion_is_bounded_and_redacted(monkeypatch):
-    client = make_client()
-    sessions = [MagicMock(), MagicMock(), MagicMock()]
-    for session in sessions:
-        session.request.side_effect = HeaderParsingError(
-            ["Proxy-Authorization: Basic cHJveHk6c2VjcmV0"],
-            b"",
-        )
-    client.session = sessions[0]
-    monkeypatch.setenv("OCI_HEADER_PARSING_ERROR_MAX_RETRIES", "1")
-    monkeypatch.setattr(
-        "oci.base_client.copy.copy",
-        Mock(side_effect=sessions[1:]),
-    )
 
     with pytest.raises(exceptions.RequestException) as raised:
         client.request(
-            sdk_request("https://proxy-user:proxy-password@example.com/resource")
+            Request(
+                method,
+                "https://proxy-user:proxy-password@example.com/resource",
+                header_params={constants.HEADER_REQUEST_ID: "request-id"},
+                body=b"payload",
+            )
         )
 
-    assert sessions[0].request.call_count == 1
-    assert sessions[1].request.call_count == 1
-    sessions[0].close.assert_called_once_with()
-    sessions[1].close.assert_called_once_with()
+    assert old_session.request.call_count == 1
+    old_session.close.assert_called_once_with()
+    new_session.request.assert_not_called()
     assert "proxy-password" not in str(raised.value)
     assert "cHJveHk6c2VjcmV0" not in str(raised.value)
 
 
-def test_negative_header_parsing_retry_configuration_is_rejected(monkeypatch):
+def test_header_parsing_error_does_not_replay_generator_body(monkeypatch):
     client = make_client()
-    client.session = MagicMock()
-    monkeypatch.setenv("OCI_HEADER_PARSING_ERROR_MAX_RETRIES", "-1")
+    old_session = MagicMock()
+    new_session = MagicMock()
+    iterations = []
 
-    with pytest.raises(ValueError, match="positive integer"):
-        client.request(sdk_request())
+    def body():
+        iterations.append("started")
+        yield b"first"
+        yield b"second"
 
-    client.session.request.assert_not_called()
+    request_body = body()
+
+    def fail_after_consuming_body(*args, **kwargs):
+        assert list(kwargs["data"]) == [b"first", b"second"]
+        raise HeaderParsingError([], b"")
+
+    old_session.request.side_effect = fail_after_consuming_body
+    client.session = old_session
+    monkeypatch.setattr("oci.base_client.copy.copy", Mock(return_value=new_session))
+
+    with pytest.raises(exceptions.RequestException):
+        client.request(
+            Request(
+                "POST",
+                "https://example.com/resource",
+                header_params={constants.HEADER_REQUEST_ID: "request-id"},
+                body=request_body,
+            )
+        )
+
+    assert iterations == ["started"]
+    assert old_session.request.call_count == 1
+    new_session.request.assert_not_called()
+
+
+def test_monitoring_none_retry_strategy_is_single_transport_attempt(monkeypatch):
+    client = MonitoringClient(
+        valid_config(),
+        signer=Mock(),
+        service_endpoint="https://telemetry-ingestion.example.com",
+    )
+    old_session = MagicMock()
+    new_session = MagicMock()
+    old_session.request.side_effect = HeaderParsingError([], b"")
+    client.base_client.session = old_session
+    monkeypatch.setattr("oci.base_client.copy.copy", Mock(return_value=new_session))
+
+    with pytest.raises(exceptions.RequestException):
+        client.post_metric_data(
+            {"metricData": []},
+            retry_strategy=retry.NoneRetryStrategy(),
+        )
+
+    assert old_session.request.call_count == 1
+    new_session.request.assert_not_called()
+
+
+def test_monitoring_explicit_retry_owns_the_second_transport_attempt(monkeypatch):
+    client = MonitoringClient(
+        valid_config(),
+        signer=Mock(),
+        service_endpoint="https://telemetry-ingestion.example.com",
+    )
+    old_session = MagicMock()
+    new_session = MagicMock()
+    old_session.request.side_effect = HeaderParsingError([], b"")
+    new_session.request.return_value = successful_response(
+        200,
+        {"content-type": "application/json"},
+        b"{}",
+    )
+    client.base_client.session = old_session
+    monkeypatch.setattr("oci.base_client.copy.copy", Mock(return_value=new_session))
+    strategy = retry.RetryStrategyBuilder(
+        max_attempts=2,
+        total_elapsed_time_check=False,
+        retry_base_sleep_time_seconds=0,
+    ).get_retry_strategy()
+    strategy.do_sleep = Mock()
+
+    response = client.post_metric_data(
+        {"metricData": []},
+        retry_strategy=strategy,
+    )
+
+    assert response.status == 200
+    assert old_session.request.call_count == 1
+    assert new_session.request.call_count == 1
+    old_session.close.assert_called_once_with()
+    strategy.do_sleep.assert_called_once()
+
+
+def test_explicit_outer_retry_retains_existing_rewind_contract():
+    class CountingBytesIO(io.BytesIO):
+        def __init__(self, value):
+            super().__init__(value)
+            self.seek_count = 0
+
+        def seek(self, *args, **kwargs):
+            self.seek_count += 1
+            return super().seek(*args, **kwargs)
+
+    class RetryingCall:
+        def __init__(self):
+            self.observed_bodies = []
+
+        def call_api(self, *, body):
+            self.observed_bodies.append(body.read())
+            if len(self.observed_bodies) == 1:
+                raise exceptions.RequestException("retryable")
+            return "success"
+
+    strategy = retry.RetryStrategyBuilder(
+        max_attempts=2,
+        total_elapsed_time_check=False,
+        retry_base_sleep_time_seconds=0,
+    ).get_retry_strategy()
+    strategy.do_sleep = Mock()
+    call = RetryingCall()
+    body = CountingBytesIO(b"payload")
+
+    assert strategy.make_retrying_call(call.call_api, body=body) == "success"
+    assert call.observed_bodies == [b"payload", b"payload"]
+    assert body.seek_count == 1
+    strategy.do_sleep.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "response_headers"),
+    (
+        (200, {}),
+        (204, {}),
+        (200, {constants.HEADER_REQUEST_ID: ""}),
+        (200, {constants.HEADER_REQUEST_ID: None}),
+    ),
+)
+def test_propagation_tolerates_missing_or_empty_response_request_id(
+    monkeypatch,
+    status_code,
+    response_headers,
+):
+    client = make_client()
+    client.PROPAGATION_ENABLED = True
+    client.session = MagicMock(
+        request=MagicMock(
+            return_value=successful_response(status_code, response_headers)
+        )
+    )
+    monkeypatch.setenv(OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME, "incoming-sentinel")
+
+    response = client.request(
+        Request("GET", "https://example.com/resource", header_params={})
+    )
+
+    assert response.status == status_code
+    assert os.environ[OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME] == "incoming-sentinel"
+
+
+def test_propagation_records_present_response_request_id(monkeypatch):
+    client = make_client()
+    client.PROPAGATION_ENABLED = True
+    client.session = MagicMock(
+        request=MagicMock(
+            return_value=successful_response(
+                200,
+                {constants.HEADER_REQUEST_ID: "response-request-id"},
+            )
+        )
+    )
+    monkeypatch.setenv(OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME, "incoming-sentinel")
+
+    response = client.request(
+        Request("GET", "https://example.com/resource", header_params={})
+    )
+
+    assert response.status == 200
+    assert os.environ[OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME] == "response-request-id"
+
+
+def test_log_requests_does_not_enable_process_global_wire_logging(
+    caplog,
+    capsys,
+):
+    original_debuglevel = http.client.HTTPConnection.debuglevel
+    http.client.HTTPConnection.debuglevel = 0
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RequestBodyRecorder)
+    server.received_requests = []
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    connection = None
+    sentinels = (
+        "basic-authorization-sentinel",
+        "proxy-authorization-sentinel",
+        "client-secret-sentinel",
+        "subject-jwt-sentinel",
+        "access-token-sentinel",
+        "security-token-sentinel",
+        "refresh-token-sentinel",
+    )
+    encoded_form_body = (
+        "client_secret=client-secret-sentinel&"
+        "subject_token=subject-jwt-sentinel&"
+        "access_token=access-token-sentinel&"
+        "security_token=security-token-sentinel&"
+        "refresh_token=refresh-token-sentinel"
+    )
+
+    try:
+        with caplog.at_level(logging.DEBUG):
+            make_client(log_requests=True)
+            assert http.client.HTTPConnection.debuglevel == 0
+            connection = http.client.HTTPConnection(
+                "127.0.0.1",
+                server.server_port,
+                timeout=2,
+            )
+            connection.request(
+                "POST",
+                "/oauth",
+                body=encoded_form_body,
+                headers={
+                    "Authorization": "Basic basic-authorization-sentinel",
+                    "Proxy-Authorization": "Basic proxy-authorization-sentinel",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            response = connection.getresponse()
+            assert response.read() == b"ok"
+            make_client(log_requests=False)
+            assert http.client.HTTPConnection.debuglevel == 0
+    finally:
+        if connection is not None:
+            connection.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+        http.client.HTTPConnection.debuglevel = original_debuglevel
+
+    assert server.received_requests[0]["body"] == encoded_form_body.encode()
+    captured_output = capsys.readouterr()
+    diagnostics = " ".join(
+        (
+            captured_output.out,
+            captured_output.err,
+            *(record.getMessage() for record in caplog.records),
+        )
+    )
+    for sentinel in (*sentinels, encoded_form_body):
+        assert sentinel not in diagnostics
+
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="Linux fd view required")

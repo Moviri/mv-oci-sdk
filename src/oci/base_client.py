@@ -45,7 +45,6 @@ OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME = "OPC_INCOMING_REQUEST_ID"
 PROPAGATION_REQUEST_ID_FILE_ENV_VAR_NAME = "OCI_PYSDK_PROPAGATION_REQUEST_ID_FILE"
 DEFAULT_PROPAGATION_REQUEST_ID_FILE_NAME = "sdk_propagation.txt"
 OCI_REALM_SPECIFIC_SERVICE_ENDPOINT_TEMPLATE_ENABLED = "OCI_REALM_SPECIFIC_SERVICE_ENDPOINT_TEMPLATE_ENABLED"
-OCI_HEADER_PARSING_ERROR_MAX_RETRIES = "OCI_HEADER_PARSING_ERROR_MAX_RETRIES"
 APPEND_USER_AGENT = os.environ.get(APPEND_USER_AGENT_ENV_VAR_NAME)
 PROPAGATION_ENABLED = False
 USER_INFO = "Oracle-PythonSDK/{}".format(__version__)
@@ -143,13 +142,6 @@ def _write_propagation_request_id_to_file(request_id):
             file.write("PROPAGATION_REQUEST_ID:{}".format(normalized_request_id))
     except Exception:
         return
-
-
-def is_http_log_enabled(is_enabled):
-    if is_enabled:
-        six.moves.http_client.HTTPConnection.debuglevel = 1
-    else:
-        six.moves.http_client.HTTPConnection.debuglevel = 0
 
 
 def _sanitize_headers_for_requests(headers):
@@ -478,10 +470,8 @@ class BaseClient(object):
         if get_config_value_or_default(config, "log_requests"):
             self.logger.disabled = False
             self.logger.setLevel(logging.DEBUG)
-            is_http_log_enabled(True)
         else:
             self.logger.disabled = True
-            is_http_log_enabled(False)
 
         self.skip_deserialization = kwargs.get('skip_deserialization')
 
@@ -1086,68 +1076,51 @@ class BaseClient(object):
         if SSE_RESPONSE_HEADER_VALUE in request.header_params.get("accept", "empty"):
             stream = True
 
-        # Attempt the request with retry logic for HeaderParsingError
-        # Can be configured via OCI_HEADER_PARSING_ERROR_MAX_RETRIES environment variable
-        max_header_error_retries = int(os.environ.get(OCI_HEADER_PARSING_ERROR_MAX_RETRIES, 2))
-        if max_header_error_retries < 0:
-            raise ValueError("max_header_error_retries must be a positive integer.")
-
-        total_attempts = max_header_error_retries + 1
-        response = None
-        for attempt in range(total_attempts):
-            try:
-                start = timer()
-                response = self.session.request(
-                    request.method,
-                    request.url,
-                    auth=signer,
-                    params=request.query_params,
-                    headers=request.header_params,
-                    data=request.body,
-                    stream=stream,
-                    timeout=self.timeout)
-                end = timer()
-                if request.header_params[constants.HEADER_REQUEST_ID]:
-                    self.logger.debug(
-                        f"{utc_now()} time elapsed for request {request.header_params[constants.HEADER_REQUEST_ID]}: {str(end - start)}")
-                if response and hasattr(response, 'elapsed'):
-                    self.logger.debug(f"{utc_now()} time elapsed in response: {str(response.elapsed)}")
-                if self.PROPAGATION_ENABLED in [True, "True"] and response.headers[constants.HEADER_REQUEST_ID]:
-                    os.environ[OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME] = response.headers[constants.HEADER_REQUEST_ID]
-                    self.logger.debug(f"Response opc-request-id: {response.headers[constants.HEADER_REQUEST_ID]}")
-                break  # Request succeeded, exit retry loop
-            except HeaderParsingError as e:
-                redacted_error = redact_sensitive_string_for_logs(e)
-                self.logger.warning(
-                    f"HeaderParsingError encountered on attempt {attempt + 1}/{total_attempts}: {redacted_error}")
-                # Reset the session to clear the connection pool
-                self._reset_session(reason=f"HeaderParsingError ({redacted_error[:100]})")
-                if attempt >= max_header_error_retries:
-                    # Last attempt failed, re-raise as RequestException
-                    if not e.args:
-                        e.args = ('',)
-                    e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)
-                    e.args = e.args + (
-                        f"Request Endpoint: {request.method} {redacted_request_url}. "
-                        f"HeaderParsingError indicates connection reuse issue. "
-                        f"See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.",)
-                    raise exceptions.RequestException(e)
-                # Otherwise, retry with the new session
-                self.logger.info(
-                    f"Retrying request after session reset (attempt {attempt + 1}/{max_header_error_retries})")
-                continue
-            except requests.exceptions.ConnectTimeout as e:
-                if not e.args:
-                    e.args = ('',)
-                e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)
-                e.args = e.args + (f"Request Endpoint: {request.method} {redacted_request_url} See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.",)
-                raise exceptions.ConnectTimeout(e)
-            except requests.exceptions.RequestException as e:
-                if not e.args:
-                    e.args = ('',)
-                e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)
-                e.args = e.args + (f"Request Endpoint: {request.method} {redacted_request_url} See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.",)
-                raise exceptions.RequestException(e)
+        try:
+            start = timer()
+            response = self.session.request(
+                request.method,
+                request.url,
+                auth=signer,
+                params=request.query_params,
+                headers=request.header_params,
+                data=request.body,
+                stream=stream,
+                timeout=self.timeout)
+            end = timer()
+            request_id = (request.header_params or {}).get(constants.HEADER_REQUEST_ID)
+            if request_id:
+                self.logger.debug(
+                    f"{utc_now()} time elapsed for request {request_id}: {str(end - start)}")
+            if response is not None and hasattr(response, 'elapsed'):
+                self.logger.debug(f"{utc_now()} time elapsed in response: {str(response.elapsed)}")
+            response_request_id = (response.headers or {}).get(constants.HEADER_REQUEST_ID)
+            if self.PROPAGATION_ENABLED in [True, "True"] and response_request_id:
+                os.environ[OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME] = response_request_id
+                self.logger.debug(f"Response opc-request-id: {response_request_id}")
+        except HeaderParsingError as e:
+            self.logger.warning("HeaderParsingError encountered; resetting session")
+            self._reset_session(reason="HeaderParsingError")
+            if not e.args:
+                e.args = ('',)
+            e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)
+            e.args = e.args + (
+                f"Request Endpoint: {request.method} {redacted_request_url}. "
+                f"HeaderParsingError indicates connection reuse issue. "
+                f"See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.",)
+            raise exceptions.RequestException(e)
+        except requests.exceptions.ConnectTimeout as e:
+            if not e.args:
+                e.args = ('',)
+            e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)
+            e.args = e.args + (f"Request Endpoint: {request.method} {redacted_request_url} See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.",)
+            raise exceptions.ConnectTimeout(e)
+        except requests.exceptions.RequestException as e:
+            if not e.args:
+                e.args = ('',)
+            e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)
+            e.args = e.args + (f"Request Endpoint: {request.method} {redacted_request_url} See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.",)
+            raise exceptions.RequestException(e)
 
         response_type = request.response_type
         self.logger.debug(f"{utc_now()} Response status: {str(response.status_code)}")

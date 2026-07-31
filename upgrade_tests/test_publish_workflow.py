@@ -46,7 +46,8 @@ def test_build_verifies_and_uploads_one_named_artifact():
 
 
 def test_publish_is_master_only_and_consumes_validated_artifact():
-    _, _, _, publish = workflow_sections()
+    prefix, validate, build, publish = workflow_sections()
+    workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "if: github.ref == 'refs/heads/master'" in publish
     assert "needs: [validate, build]" in publish
@@ -63,3 +64,8 @@ def test_publish_is_master_only_and_consumes_validated_artifact():
     assert "password: ${{ secrets.PYPI_API_TOKEN }}" in publish
     assert "actions/checkout" not in publish
     assert "python -m build" not in publish
+    assert workflow.count("PYPI_API_TOKEN") == 1
+    assert "PYPI_API_TOKEN" not in prefix
+    assert "PYPI_API_TOKEN" not in validate
+    assert "PYPI_API_TOKEN" not in build
+    assert publish.count("PYPI_API_TOKEN") == 1

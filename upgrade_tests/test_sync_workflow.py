@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -22,17 +23,44 @@ def load_sync_module():
 
 
 def run_git(repository, *args):
+    control_root = repository.parent / ".git-test-control"
+    hooks_directory = control_root / "hooks"
+    template_directory = control_root / "template"
+    hooks_directory.mkdir(parents=True, exist_ok=True)
+    template_directory.mkdir(parents=True, exist_ok=True)
+
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key == "GIT_CONFIG_COUNT" or key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
+            environment.pop(key)
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TEMPLATE_DIR": str(template_directory),
+        }
+    )
+
     return subprocess.run(
-        ["git", *args],
+        [
+            "git",
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "tag.gpgSign=false",
+            "-c",
+            f"core.hooksPath={hooks_directory}",
+            *args,
+        ],
         cwd=repository,
         check=True,
         capture_output=True,
         text=True,
+        env=environment,
     ).stdout.strip()
 
 
-@pytest.fixture
-def synthetic_upstream(tmp_path):
+def create_synthetic_upstream(tmp_path):
     repository = tmp_path / "oracle"
     repository.mkdir()
     run_git(repository, "init")
@@ -50,6 +78,11 @@ def synthetic_upstream(tmp_path):
     run_git(repository, "commit", "-am", "second")
     later_commit = run_git(repository, "rev-parse", "HEAD")
     return repository, tagged_commit, later_commit
+
+
+@pytest.fixture
+def synthetic_upstream(tmp_path):
+    return create_synthetic_upstream(tmp_path)
 
 
 def test_recorded_upstream_metadata_is_exact():
@@ -86,6 +119,51 @@ def test_upstream_verification_rejects_mismatched_tag_and_commit(
             repository,
             {"tag": "v-test", "commit": later_commit},
         )
+
+
+def test_synthetic_git_ignores_hostile_signing_hooks_and_injected_config(
+    tmp_path,
+    monkeypatch,
+):
+    hostile_hooks = tmp_path / "hostile-hooks"
+    hostile_hooks.mkdir()
+    hook_marker = tmp_path / "hostile-hook-ran"
+    pre_commit_hook = hostile_hooks / "pre-commit"
+    pre_commit_hook.write_text(
+        f"#!/bin/sh\ntouch {hook_marker}\nexit 1\n",
+        encoding="utf-8",
+    )
+    pre_commit_hook.chmod(0o755)
+    hostile_global = tmp_path / "hostile-global.gitconfig"
+    hostile_global.write_text(
+        "[commit]\n\tgpgSign = true\n"
+        "[tag]\n\tgpgSign = true\n"
+        f"[core]\n\thooksPath = {hostile_hooks}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(hostile_global))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "3")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "commit.gpgSign")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "tag.gpgSign")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "true")
+    monkeypatch.setenv("GIT_CONFIG_KEY_2", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_2", str(hostile_hooks))
+
+    repository, tagged_commit, later_commit = create_synthetic_upstream(tmp_path)
+    sync = load_sync_module()
+    sync.verify_upstream(
+        repository,
+        {"tag": "v-test", "commit": tagged_commit},
+    )
+    with pytest.raises(RuntimeError, match="resolved to .* expected"):
+        sync.verify_upstream(
+            repository,
+            {"tag": "v-test", "commit": later_commit},
+        )
+
+    assert not hook_marker.exists()
 
 
 def test_selected_manifest_paths_exist_after_sync():
@@ -232,6 +310,34 @@ def test_selected_entries_are_all_validated_before_copy(tmp_path):
     assert_sync_sentinels_unchanged(repository, sentinels)
 
 
+@pytest.mark.parametrize(
+    "missing_literal",
+    (
+        ":(exclude)src/oci/missing",
+        ":(glob)src/oci/missing",
+        "src/oci/missing*",
+        "src/oci/missing?",
+        "src/oci/missing[abc]",
+    ),
+)
+def test_all_selected_sources_are_preflighted_before_mutation(
+    tmp_path,
+    missing_literal,
+):
+    sync = load_sync_module()
+    repository, extracted, sentinels = prepare_sync_roots(tmp_path)
+
+    with pytest.raises(RuntimeError, match="absent from upstream commit"):
+        sync.apply_sync_payload(
+            extracted,
+            ["src/oci/valid", missing_literal],
+            [],
+            repo_root=repository,
+        )
+
+    assert_sync_sentinels_unchanged(repository, sentinels)
+
+
 def test_prune_entries_are_all_validated_before_mutation(tmp_path):
     sync = load_sync_module()
     repository, extracted, sentinels = prepare_sync_roots(tmp_path)
@@ -308,3 +414,41 @@ def test_archive_extraction_rejects_links(tmp_path):
 
     with pytest.raises(RuntimeError, match="Links are not allowed"):
         sync.safe_extract(archive_path, tmp_path / "output")
+
+
+def test_archive_treats_magic_looking_manifest_entries_as_literal_paths(tmp_path):
+    sync = load_sync_module()
+    repository = tmp_path / "literal-upstream"
+    repository.mkdir()
+    run_git(repository, "init")
+    run_git(repository, "config", "user.name", "Sync Test")
+    run_git(repository, "config", "user.email", "sync-test@example.invalid")
+    literal_paths = (
+        ":(exclude)payload.txt",
+        ":(glob)payload.txt",
+        "literal*name.txt",
+        "literal?name.txt",
+        "literal[abc].txt",
+    )
+    for index, relative_path in enumerate(literal_paths):
+        (repository / relative_path).write_text(
+            f"literal-{index}\n",
+            encoding="utf-8",
+        )
+    (repository / "literalXname.txt").write_text("must-not-match\n", encoding="utf-8")
+    run_git(repository, "add", "--", ".")
+    run_git(repository, "commit", "-m", "literal paths")
+    commit = run_git(repository, "rev-parse", "HEAD")
+    extracted = tmp_path / "extracted-literals"
+    extracted.mkdir()
+
+    sync.archive_selected_paths(
+        repository,
+        commit,
+        list(literal_paths),
+        extracted,
+    )
+
+    for index, relative_path in enumerate(literal_paths):
+        assert (extracted / relative_path).read_text(encoding="utf-8") == f"literal-{index}\n"
+    assert not (extracted / "literalXname.txt").exists()

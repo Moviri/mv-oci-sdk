@@ -4,6 +4,7 @@ import importlib.metadata
 import importlib.util
 import inspect
 import pkgutil
+import re
 from pathlib import Path
 
 import jwt
@@ -154,6 +155,49 @@ def test_dependency_and_build_safety_floors():
         for value in build_metadata["build-system"]["requires"]
     }
     assert str(build_requirements["wheel"].specifier) == ">=0.46.2"
+
+
+def test_public_package_metadata_describes_consumer_exclusive_contract():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / "README.rst").read_text(encoding="utf-8")
+    documented_services = tuple(
+        re.findall(r"^\* ``([^`]+)``$", readme, flags=re.MULTILINE)
+    )
+    normalized_readme = " ".join(readme.split())
+
+    assert "Moviri-maintained, consumer-exclusive runtime" in normalized_readme
+    assert "curated for ``python-oci-compute``" in normalized_readme
+    assert documented_services == RETAINED_SERVICES
+    assert "Python 3.10, 3.11, 3.12, and 3.13 are the tested support matrix" in normalized_readme
+    assert "DNS models are retained only as an internal pagination dependency" in normalized_readme
+    assert "The DNS client is not packaged or supported" in normalized_readme
+    for excluded_helper in (
+        "standalone waiter",
+        "generated composite-operation wrappers",
+        "Functions Invoke client",
+        "Object Storage transfer helpers",
+    ):
+        assert excluded_helper in normalized_readme
+    assert "Oracle does not maintain this Moviri distribution" in normalized_readme
+
+    setup_tree = ast.parse((root / "setup.py").read_text(encoding="utf-8"))
+    setup_call = next(
+        node.value
+        for node in setup_tree.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "setup"
+    )
+    setup_keywords = {
+        keyword.arg: ast.literal_eval(keyword.value)
+        for keyword in setup_call.keywords
+        if keyword.arg in {"description", "python_requires"}
+    }
+    assert setup_keywords == {
+        "description": "Moviri-maintained OCI SDK runtime curated exclusively for python-oci-compute",
+        "python_requires": ">=3.10",
+    }
 
 
 def test_python_oci_compute_method_signatures():

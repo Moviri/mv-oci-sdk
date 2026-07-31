@@ -193,6 +193,7 @@ def archive_selected_paths(
         subprocess.run(
             [
                 "git",
+                "--literal-pathspecs",
                 "archive",
                 "--format=tar",
                 commit,
@@ -224,11 +225,14 @@ def copy_selected_paths(
     *,
     repo_root: Path = REPO_ROOT,
 ) -> None:
+    selected_sources = []
     for relative_path in selected_paths:
         source = extracted_root / relative_path
         if not source.exists():
             raise RuntimeError(f"Selected path is absent from upstream commit: {relative_path}")
+        selected_sources.append((relative_path, source))
 
+    for relative_path, source in selected_sources:
         remove_path(relative_path, repo_root=repo_root)
         destination = resolve_manifest_target(relative_path, repo_root=repo_root)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -306,6 +310,92 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     )
 
     base_client_path = REPO_ROOT / "src" / "oci" / "base_client.py"
+    replace_exact(
+        base_client_path,
+        'OCI_HEADER_PARSING_ERROR_MAX_RETRIES = "OCI_HEADER_PARSING_ERROR_MAX_RETRIES"\n',
+        "",
+        "obsolete hidden header retry setting",
+    )
+    replace_between(
+        base_client_path,
+        "def is_http_log_enabled(is_enabled):\n",
+        "def _sanitize_headers_for_requests(headers):\n",
+        "",
+        "process-global HTTP wire logging toggle",
+    )
+    replace_exact(
+        base_client_path,
+        (
+            '        if get_config_value_or_default(config, "log_requests"):\n'
+            "            self.logger.disabled = False\n"
+            "            self.logger.setLevel(logging.DEBUG)\n"
+            "            is_http_log_enabled(True)\n"
+            "        else:\n"
+            "            self.logger.disabled = True\n"
+            "            is_http_log_enabled(False)\n"
+        ),
+        (
+            '        if get_config_value_or_default(config, "log_requests"):\n'
+            "            self.logger.disabled = False\n"
+            "            self.logger.setLevel(logging.DEBUG)\n"
+            "        else:\n"
+            "            self.logger.disabled = True\n"
+        ),
+        "per-client structured request logging",
+    )
+    replace_between(
+        base_client_path,
+        "        # Attempt the request with retry logic for HeaderParsingError\n",
+        "        response_type = request.response_type\n",
+        (
+            "        try:\n"
+            "            start = timer()\n"
+            "            response = self.session.request(\n"
+            "                request.method,\n"
+            "                request.url,\n"
+            "                auth=signer,\n"
+            "                params=request.query_params,\n"
+            "                headers=request.header_params,\n"
+            "                data=request.body,\n"
+            "                stream=stream,\n"
+            "                timeout=self.timeout)\n"
+            "            end = timer()\n"
+            "            request_id = (request.header_params or {}).get(constants.HEADER_REQUEST_ID)\n"
+            "            if request_id:\n"
+            "                self.logger.debug(\n"
+            "                    f\"{utc_now()} time elapsed for request {request_id}: {str(end - start)}\")\n"
+            "            if response is not None and hasattr(response, 'elapsed'):\n"
+            "                self.logger.debug(f\"{utc_now()} time elapsed in response: {str(response.elapsed)}\")\n"
+            "            response_request_id = (response.headers or {}).get(constants.HEADER_REQUEST_ID)\n"
+            "            if self.PROPAGATION_ENABLED in [True, \"True\"] and response_request_id:\n"
+            "                os.environ[OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME] = response_request_id\n"
+            "                self.logger.debug(f\"Response opc-request-id: {response_request_id}\")\n"
+            "        except HeaderParsingError as e:\n"
+            "            self.logger.warning(\"HeaderParsingError encountered; resetting session\")\n"
+            "            self._reset_session(reason=\"HeaderParsingError\")\n"
+            "            if not e.args:\n"
+            "                e.args = ('',)\n"
+            "            e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)\n"
+            "            e.args = e.args + (\n"
+            "                f\"Request Endpoint: {request.method} {redacted_request_url}. \"\n"
+            "                f\"HeaderParsingError indicates connection reuse issue. \"\n"
+            "                f\"See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.\",)\n"
+            "            raise exceptions.RequestException(e)\n"
+            "        except requests.exceptions.ConnectTimeout as e:\n"
+            "            if not e.args:\n"
+            "                e.args = ('',)\n"
+            "            e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)\n"
+            "            e.args = e.args + (f\"Request Endpoint: {request.method} {redacted_request_url} See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.\",)\n"
+            "            raise exceptions.ConnectTimeout(e)\n"
+            "        except requests.exceptions.RequestException as e:\n"
+            "            if not e.args:\n"
+            "                e.args = ('',)\n"
+            "            e.args = tuple(redact_sensitive_string_for_logs(arg) for arg in e.args)\n"
+            "            e.args = e.args + (f\"Request Endpoint: {request.method} {redacted_request_url} See {TROUBLESHOOT_URL} for help troubleshooting this error, or contact support and provide this full error message.\",)\n"
+            "            raise exceptions.RequestException(e)\n\n"
+        ),
+        "single-attempt malformed-header request handling",
+    )
     replace_exact(
         base_client_path,
         "        self.circuit_breaker_name = None\n",
@@ -394,6 +484,68 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     run_git(
         ["apply", "--unidiff-zero", str(OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH)],
         cwd=REPO_ROOT,
+    )
+    oauth_exchange_signer_path = (
+        REPO_ROOT
+        / "src"
+        / "oci"
+        / "auth"
+        / "signers"
+        / "oauth_exhange_token_signer.py"
+    )
+    replace_exact(
+        oauth_exchange_signer_path,
+        "import typing\n",
+        "import typing\nfrom urllib.parse import urlsplit\n",
+        "OAuth endpoint URL parser import",
+    )
+    replace_exact(
+        oauth_exchange_signer_path,
+        (
+            "    def _set_oauth_token_endpoint(self, oauth_token_endpoint):\n"
+            "        if not oauth_token_endpoint:\n"
+            "            oauth_token_endpoint = self._fetch_oauth_token_endpoint()\n"
+            "        self.oauth_token_endpoint = oauth_token_endpoint\n"
+            "        self.logger.debug(\n"
+            '            "%s OAuth endpoint configured token_signer=%s",\n'
+            "            self.LOG_PREFIX,\n"
+            "            self._token_signer_name(),\n"
+            "        )\n"
+        ),
+        (
+            "    def _set_oauth_token_endpoint(self, oauth_token_endpoint):\n"
+            "        if not oauth_token_endpoint:\n"
+            "            oauth_token_endpoint = self._fetch_oauth_token_endpoint()\n"
+            "        self.oauth_token_endpoint = self._validate_oauth_token_endpoint(\n"
+            "            oauth_token_endpoint\n"
+            "        )\n"
+            "        self.logger.debug(\n"
+            '            "%s OAuth endpoint configured token_signer=%s",\n'
+            "            self.LOG_PREFIX,\n"
+            "            self._token_signer_name(),\n"
+            "        )\n\n"
+            "    @staticmethod\n"
+            "    def _validate_oauth_token_endpoint(oauth_token_endpoint):\n"
+            "        if not isinstance(oauth_token_endpoint, str) or not oauth_token_endpoint:\n"
+            '            raise ValueError("oauth_token_endpoint must be an absolute HTTPS URL")\n'
+            "        if any(character.isspace() or ord(character) < 32 for character in oauth_token_endpoint):\n"
+            '            raise ValueError("oauth_token_endpoint must be an absolute HTTPS URL")\n\n'
+            "        try:\n"
+            "            parsed_endpoint = urlsplit(oauth_token_endpoint)\n"
+            "            parsed_endpoint.port\n"
+            "        except ValueError as error:\n"
+            "            raise ValueError(\n"
+            '                "oauth_token_endpoint must include a valid HTTPS hostname and optional port"\n'
+            "            ) from error\n\n"
+            '        if parsed_endpoint.scheme.lower() != "https" or not parsed_endpoint.hostname:\n'
+            '            raise ValueError("oauth_token_endpoint must be an absolute HTTPS URL")\n'
+            "        if parsed_endpoint.username is not None or parsed_endpoint.password is not None:\n"
+            '            raise ValueError("oauth_token_endpoint must not contain userinfo")\n'
+            '        if "?" in oauth_token_endpoint or "#" in oauth_token_endpoint:\n'
+            '            raise ValueError("oauth_token_endpoint must not contain a query or fragment")\n\n'
+            "        return oauth_token_endpoint\n"
+        ),
+        "OAuth exchange HTTPS endpoint validation",
     )
 
     shutil.copy2(

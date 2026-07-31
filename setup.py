@@ -46,7 +46,7 @@ setup(
     name="mv-oci-sdk",
     url="https://github.com/Moviri/mv-oci-sdk",
     version=version,
-    description="Oracle Cloud Infrastructure Python SDK modified by Moviri for use in Dynatrace extensions",
+    description="Moviri-maintained OCI SDK runtime curated exclusively for python-oci-compute",
     long_description=readme,
     long_description_content_type="text/x-rst",
     author="Moviri",
