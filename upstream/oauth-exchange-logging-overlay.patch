@@ -1,5 +1,5 @@
 diff --git a/src/oci/auth/signers/oauth_exhange_token_signer.py b/src/oci/auth/signers/oauth_exhange_token_signer.py
-index ed47cc7dd..3d01dedfd 100644
+index ed47cc7dd..b2c7e1754 100644
 --- a/src/oci/auth/signers/oauth_exhange_token_signer.py
 +++ b/src/oci/auth/signers/oauth_exhange_token_signer.py
 @@ -64,9 +63,0 @@ from oci.regions import REGION_IDENTIFIER_PROPERTY_NAME
@@ -287,16 +287,45 @@ index ed47cc7dd..3d01dedfd 100644
 -            self._security_token_expiration(),
 -        )
 +        self.logger.debug("%s Reset OAuth request signers", self.LOG_PREFIX)
-@@ -694,2 +558,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
+@@ -659,28 +523,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
+-    def _security_token_age_seconds(self):
+-        last_fetch_time = getattr(self, "_last_fetch_time", None)
+-        if last_fetch_time is None:
+-            return None
+-        return int(time.time() - last_fetch_time)
+-
+-    def _security_token_expiration(self):
+-        security_token = getattr(self, "_security_token", None)
+-        if not security_token:
+-            return None
+-        jwt = security_token.get_jwt()
+-        expiration = jwt.get("exp") if jwt and hasattr(jwt, "get") else None
+-        if not expiration:
+-            return None
+-        try:
+-            return int(expiration)
+-        except (TypeError, ValueError):
+-            return None
+-
+-    def _session_key_fingerprint(self):
+-        session_key_supplier = getattr(self, "_session_key_supplier", None)
+-        if not session_key_supplier:
+-            return None
+-        get_key_fingerprint = getattr(session_key_supplier, "get_key_fingerprint", None)
+-        if callable(get_key_fingerprint):
+-            return get_key_fingerprint()
+-        return None
+-
+@@ -694,2 +530,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
 -                    "url": response.url,
 -                    "reason": response.reason,
-@@ -700,5 +562,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
+@@ -700,5 +534,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
 -            self._print_log_message(
 -                "%s OAuth token response received %s",
 -                self.LOG_PREFIX,
 -                pprint.pformat(log_dict, indent=2),
 -            )
-@@ -708,5 +565,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
+@@ -708,5 +537,0 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
 -            self._print_log_message(
 -                "%s OAuth token response received %s",
 -                self.LOG_PREFIX,

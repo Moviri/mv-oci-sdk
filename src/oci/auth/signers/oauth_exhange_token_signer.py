@@ -521,34 +521,6 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
     def _token_signer_name(self):
         return self.token_signer.__class__.__name__
 
-    def _security_token_age_seconds(self):
-        last_fetch_time = getattr(self, "_last_fetch_time", None)
-        if last_fetch_time is None:
-            return None
-        return int(time.time() - last_fetch_time)
-
-    def _security_token_expiration(self):
-        security_token = getattr(self, "_security_token", None)
-        if not security_token:
-            return None
-        jwt = security_token.get_jwt()
-        expiration = jwt.get("exp") if jwt and hasattr(jwt, "get") else None
-        if not expiration:
-            return None
-        try:
-            return int(expiration)
-        except (TypeError, ValueError):
-            return None
-
-    def _session_key_fingerprint(self):
-        session_key_supplier = getattr(self, "_session_key_supplier", None)
-        if not session_key_supplier:
-            return None
-        get_key_fingerprint = getattr(session_key_supplier, "get_key_fingerprint", None)
-        if callable(get_key_fingerprint):
-            return get_key_fingerprint()
-        return None
-
     @staticmethod
     def _get_response_opc_request_id(response):
         return response.headers.get("opc-request-id") or response.headers.get("Opc-Request-Id")

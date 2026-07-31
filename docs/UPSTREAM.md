@@ -11,6 +11,15 @@ The immutable upstream release is recorded in
 `upstream/selected-paths.txt`. The synchronization script also removes the
 legacy paths in `upstream/prune-paths.txt`.
 
+The retained service boundary follows the repository's existing pruning
+history. Commit `599f63a` retained `core`, `database`,
+`database_management`, `database_tools`, `dns`, `identity`, `monitoring`,
+`object_storage`, `queue`, and `work_requests`. The current
+`python-oci-compute` consumer additionally imports `file_storage`, `functions`,
+`load_balancer`, and `network_load_balancer`. The selected-path manifest is the
+exact union of those service sets; all other Oracle service packages remain
+excluded.
+
 From a clean `mv-oci-sdk` worktree, run:
 
 ```text
