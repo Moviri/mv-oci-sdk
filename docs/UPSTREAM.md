@@ -50,6 +50,10 @@ The overlay is deliberately small:
   half-life refresh and domain-ID compatibility while requiring HTTPS domain
   URLs, normalizing the token path, applying finite connection/read timeouts,
   and keeping credentials and token responses out of logs.
+- `src/oci/auth/signers/oauth_exhange_token_signer.py` receives
+  `upstream/oauth-exchange-logging-overlay.patch`. The patch removes direct
+  stdout diagnostics and limits structured logs to non-secret event, status,
+  request ID, signer-class, and exception-type metadata.
 - `src/oci/_vendor/requests/adapters.py` receives an exact transport
   transformation that uses urllib3 2.x `urlopen(..., chunked=...)` handling
   for both fixed-length and generator-backed bodies instead of the removed

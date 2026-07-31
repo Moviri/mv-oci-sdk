@@ -61,15 +61,6 @@ from oci.auth.signers.security_token_signer import SECURITY_TOKEN_FORMAT_STRING
 from oci.regions import REGION_IDENTIFIER_PROPERTY_NAME
 
 
-def _format_log_message(message, *args):
-    if not args:
-        return message
-    try:
-        return message % args
-    except Exception:
-        return "{} {}".format(message, " ".join(str(arg) for arg in args))
-
-
 class OauthExchangeTokenSigner(SecurityTokenSigner):
     """
     OAuth Exchange Token Signer for OCI SDK Authentication
@@ -151,10 +142,6 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
         if self._log_requests_enabled:
             self.logger.setLevel(logging.DEBUG)
 
-    def _print_log_message(self, message, *args):
-        if getattr(self, "_log_requests_enabled", False):
-            print(_format_log_message(message, *args), flush=True)
-
     def _set_class_vars(self, token_signer, scope, target_compartment, cert_bundle_verify):
         self.token_signer = token_signer
         self.scope = scope
@@ -166,12 +153,9 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
         if not oauth_token_endpoint:
             oauth_token_endpoint = self._fetch_oauth_token_endpoint()
         self.oauth_token_endpoint = oauth_token_endpoint
-        self.logger.debug("%s OAuth endpoint configured endpoint=%s token_signer=%s",
-                          self.LOG_PREFIX, self.oauth_token_endpoint, self._token_signer_name())
-        self._print_log_message(
-            "%s OAuth endpoint configured endpoint=%s token_signer=%s",
+        self.logger.debug(
+            "%s OAuth endpoint configured token_signer=%s",
             self.LOG_PREFIX,
-            self.oauth_token_endpoint,
             self._token_signer_name(),
         )
 
@@ -204,29 +188,14 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
         self._security_token: typing.Optional[SecurityTokenContainer] = None
 
     def _generate_oauth_token_and_set_state(self):
-        self.logger.debug("%s Starting OAuth token exchange target_compartment=%s scope=%s token_signer=%s oauth_key_fingerprint=%s",
-                          self.LOG_PREFIX, self.target_compartment, self.scope,
-                          self._token_signer_name(), self._session_key_fingerprint())
-        self._print_log_message(
-            "%s Starting OAuth token exchange target_compartment=%s scope=%s token_signer=%s oauth_key_fingerprint=%s",
+        self.logger.debug(
+            "%s Starting OAuth token exchange token_signer=%s",
             self.LOG_PREFIX,
-            self.target_compartment,
-            self.scope,
             self._token_signer_name(),
-            self._session_key_fingerprint(),
         )
         oauth_token = self._generate_oauth_token()
         self._set_state(oauth_token)
-        self.logger.debug("%s OAuth token exchange completed token_valid=%s token_expiration=%s oauth_key_fingerprint=%s",
-                          self.LOG_PREFIX, self._is_security_token_valid(),
-                          self._security_token_expiration(), self._session_key_fingerprint())
-        self._print_log_message(
-            "%s OAuth token exchange completed token_valid=%s token_expiration=%s oauth_key_fingerprint=%s",
-            self.LOG_PREFIX,
-            self._is_security_token_valid(),
-            self._security_token_expiration(),
-            self._session_key_fingerprint(),
-        )
+        self.logger.debug("%s OAuth token exchange completed", self.LOG_PREFIX)
 
     def _generate_oauth_token(self):
         """
@@ -250,15 +219,10 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
 
         response = self._make_oauth_request(request_headers, request_payload)
         if not response.ok:
-            self.logger.error("%s OAuth token exchange failed status=%s reason=%s endpoint=%s opc_request_id=%s",
-                              self.LOG_PREFIX, response.status_code, response.reason,
-                              response.url, self._get_response_opc_request_id(response))
-            self._print_log_message(
-                "%s OAuth token exchange failed status=%s reason=%s endpoint=%s opc_request_id=%s",
+            self.logger.error(
+                "%s OAuth token exchange failed status=%s opc_request_id=%s",
                 self.LOG_PREFIX,
                 response.status_code,
-                response.reason,
-                response.url,
                 self._get_response_opc_request_id(response),
             )
             raise oci.exceptions.ServiceError(response.status_code, response.reason, response.headers,
@@ -299,70 +263,47 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
         """Execute the authenticated HTTP request to the OAuth endpoint"""
         # The OAuth exchange is signed by token_signer directly, outside BaseClient's
         # normal retry path. Give refreshable signers a chance to renew first.
-        self.logger.debug("%s Ensuring wrapped token signer is current token_signer=%s endpoint=%s",
-                          self.LOG_PREFIX, self._token_signer_name(), self.oauth_token_endpoint)
-        self._print_log_message(
-            "%s Ensuring wrapped token signer is current token_signer=%s endpoint=%s",
+        self.logger.debug(
+            "%s Ensuring wrapped token signer is current token_signer=%s",
             self.LOG_PREFIX,
             self._token_signer_name(),
-            self.oauth_token_endpoint,
         )
         self._ensure_token_signer_current()
 
-        self.logger.debug("%s Requesting OAuth token endpoint=%s token_signer=%s oauth_key_fingerprint=%s",
-                          self.LOG_PREFIX, self.oauth_token_endpoint, self._token_signer_name(),
-                          self._session_key_fingerprint())
-        self._print_log_message(
-            "%s Requesting OAuth token endpoint=%s token_signer=%s oauth_key_fingerprint=%s",
+        self.logger.debug(
+            "%s Requesting OAuth token token_signer=%s",
             self.LOG_PREFIX,
-            self.oauth_token_endpoint,
             self._token_signer_name(),
-            self._session_key_fingerprint(),
         )
         # Make POST request to OAuth endpoint, authenticated with the original token_signer
         session = requests.Session()
         try:
             response = self._post_oauth_request(session, headers, payload)
-        except Exception as e:
-            self.logger.error("%s OAuth token request failed before response attempt=initial endpoint=%s token_signer=%s error_type=%s error=%s",
-                              self.LOG_PREFIX, self.oauth_token_endpoint, self._token_signer_name(),
-                              type(e).__name__, str(e))
-            self._print_log_message(
-                "%s OAuth token request failed before response attempt=initial endpoint=%s token_signer=%s error_type=%s error=%s",
+        except Exception as error:
+            self.logger.error(
+                "%s OAuth token request failed before response attempt=initial token_signer=%s error_type=%s",
                 self.LOG_PREFIX,
-                self.oauth_token_endpoint,
                 self._token_signer_name(),
-                type(e).__name__,
-                str(e),
+                type(error).__name__,
             )
             raise
         self._log_oauth_response(response, "initial")
         if response.status_code == 401 and self._force_refresh_token_signer():
             # A 401 here is an AuthN failure for the wrapped signer, so retry once
             # after forcing the same kind of token refresh BaseClient performs.
-            self.logger.debug("%s Retrying OAuth token exchange after wrapped signer refresh endpoint=%s token_signer=%s oauth_key_fingerprint=%s",
-                              self.LOG_PREFIX, self.oauth_token_endpoint, self._token_signer_name(),
-                              self._session_key_fingerprint())
-            self._print_log_message(
-                "%s Retrying OAuth token exchange after wrapped signer refresh endpoint=%s token_signer=%s oauth_key_fingerprint=%s",
+            self.logger.debug(
+                "%s Retrying OAuth token exchange after wrapped signer refresh token_signer=%s",
                 self.LOG_PREFIX,
-                self.oauth_token_endpoint,
                 self._token_signer_name(),
-                self._session_key_fingerprint(),
             )
             try:
                 response = self._post_oauth_request(session, headers, payload)
-            except Exception as e:
-                self.logger.error("%s OAuth token request failed before response attempt=retry endpoint=%s token_signer=%s error_type=%s error=%s",
-                                  self.LOG_PREFIX, self.oauth_token_endpoint, self._token_signer_name(),
-                                  type(e).__name__, str(e))
-                self._print_log_message(
-                    "%s OAuth token request failed before response attempt=retry endpoint=%s token_signer=%s error_type=%s error=%s",
+            except Exception as error:
+                self.logger.error(
+                    "%s OAuth token request failed before response attempt=retry token_signer=%s error_type=%s",
                     self.LOG_PREFIX,
-                    self.oauth_token_endpoint,
                     self._token_signer_name(),
-                    type(e).__name__,
-                    str(e),
+                    type(error).__name__,
                 )
                 raise
             self._log_oauth_response(response, "retry")
@@ -380,37 +321,28 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
     def _ensure_token_signer_current(self):
         get_security_token = getattr(self.token_signer, "get_security_token", None)
         if callable(get_security_token):
-            self.logger.debug("%s Calling wrapped signer get_security_token token_signer=%s",
-                              self.LOG_PREFIX, self._token_signer_name())
-            self._print_log_message(
+            self.logger.debug(
                 "%s Calling wrapped signer get_security_token token_signer=%s",
                 self.LOG_PREFIX,
                 self._token_signer_name(),
             )
             try:
                 get_security_token()
-                self.logger.debug("%s Wrapped signer get_security_token completed token_signer=%s",
-                                  self.LOG_PREFIX, self._token_signer_name())
-                self._print_log_message(
+                self.logger.debug(
                     "%s Wrapped signer get_security_token completed token_signer=%s",
                     self.LOG_PREFIX,
                     self._token_signer_name(),
                 )
-            except Exception as e:
-                self.logger.error("%s Wrapped signer get_security_token failed token_signer=%s error_type=%s error=%s",
-                                  self.LOG_PREFIX, self._token_signer_name(), type(e).__name__, str(e))
-                self._print_log_message(
-                    "%s Wrapped signer get_security_token failed token_signer=%s error_type=%s error=%s",
+            except Exception as error:
+                self.logger.error(
+                    "%s Wrapped signer get_security_token failed token_signer=%s error_type=%s",
                     self.LOG_PREFIX,
                     self._token_signer_name(),
-                    type(e).__name__,
-                    str(e),
+                    type(error).__name__,
                 )
                 raise
         else:
-            self.logger.debug("%s Wrapped signer does not expose get_security_token token_signer=%s",
-                              self.LOG_PREFIX, self._token_signer_name())
-            self._print_log_message(
+            self.logger.debug(
                 "%s Wrapped signer does not expose get_security_token token_signer=%s",
                 self.LOG_PREFIX,
                 self._token_signer_name(),
@@ -419,37 +351,28 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
     def _force_refresh_token_signer(self):
         refresh_security_token = getattr(self.token_signer, "refresh_security_token", None)
         if not callable(refresh_security_token):
-            self.logger.error("%s Wrapped signer cannot be force-refreshed token_signer=%s",
-                              self.LOG_PREFIX, self._token_signer_name())
-            self._print_log_message(
+            self.logger.error(
                 "%s Wrapped signer cannot be force-refreshed token_signer=%s",
                 self.LOG_PREFIX,
                 self._token_signer_name(),
             )
             return False
-        self.logger.debug("%s Calling wrapped signer refresh_security_token token_signer=%s",
-                          self.LOG_PREFIX, self._token_signer_name())
-        self._print_log_message(
+        self.logger.debug(
             "%s Calling wrapped signer refresh_security_token token_signer=%s",
             self.LOG_PREFIX,
             self._token_signer_name(),
         )
         try:
             refresh_security_token()
-        except Exception as e:
-            self.logger.error("%s Wrapped signer refresh_security_token failed token_signer=%s error_type=%s error=%s",
-                              self.LOG_PREFIX, self._token_signer_name(), type(e).__name__, str(e))
-            self._print_log_message(
-                "%s Wrapped signer refresh_security_token failed token_signer=%s error_type=%s error=%s",
+        except Exception as error:
+            self.logger.error(
+                "%s Wrapped signer refresh_security_token failed token_signer=%s error_type=%s",
                 self.LOG_PREFIX,
                 self._token_signer_name(),
-                type(e).__name__,
-                str(e),
+                type(error).__name__,
             )
             raise
-        self.logger.debug("%s Wrapped signer refresh_security_token completed token_signer=%s",
-                          self.LOG_PREFIX, self._token_signer_name())
-        self._print_log_message(
+        self.logger.debug(
             "%s Wrapped signer refresh_security_token completed token_signer=%s",
             self.LOG_PREFIX,
             self._token_signer_name(),
@@ -468,7 +391,7 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
             response_json = json.loads(decoded_response)
             return SecurityTokenContainer(self._session_key_supplier, response_json["token"])
         else:
-            raise RuntimeError(f"Could not find token in the decoded response: {decoded_response}")
+            raise RuntimeError("Could not find token in the OAuth response")
 
     def _set_state(self, security_token):
         self._security_token = security_token
@@ -487,58 +410,26 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
 
     def get_security_token(self):
         if self._is_security_token_stale():
-            self.logger.debug("%s OAuth token is stale; refreshing age_seconds=%s token_expiration=%s oauth_key_fingerprint=%s",
-                              self.LOG_PREFIX, self._security_token_age_seconds(),
-                              self._security_token_expiration(), self._session_key_fingerprint())
-            self._print_log_message(
-                "%s OAuth token is stale; refreshing age_seconds=%s token_expiration=%s oauth_key_fingerprint=%s",
-                self.LOG_PREFIX,
-                self._security_token_age_seconds(),
-                self._security_token_expiration(),
-                self._session_key_fingerprint(),
-            )
+            self.logger.debug("%s OAuth token is stale; refreshing", self.LOG_PREFIX)
             self.refresh_security_token()
         return self._security_token.security_token
 
     def refresh_security_token(self):
         # BaseClient treats this signer as refreshable and calls this method after
         # service 401s, matching instance/resource principal signer behavior.
-        self.logger.debug("%s Refreshing OAuth security token token_valid=%s age_seconds=%s token_expiration=%s oauth_key_fingerprint=%s",
-                          self.LOG_PREFIX, self._is_security_token_valid(),
-                          self._security_token_age_seconds(), self._security_token_expiration(),
-                          self._session_key_fingerprint())
-        self._print_log_message(
-            "%s Refreshing OAuth security token token_valid=%s age_seconds=%s token_expiration=%s oauth_key_fingerprint=%s",
-            self.LOG_PREFIX,
-            self._is_security_token_valid(),
-            self._security_token_age_seconds(),
-            self._security_token_expiration(),
-            self._session_key_fingerprint(),
-        )
+        self.logger.debug("%s Refreshing OAuth security token", self.LOG_PREFIX)
         with self._reset_signers_lock:
             token_refreshed = self._refresh_oauth_token()
             if token_refreshed:
                 self._reset_signers()
-                self.logger.debug("%s OAuth security token refreshed and signers reset token_valid=%s token_expiration=%s oauth_key_fingerprint=%s",
-                                  self.LOG_PREFIX, self._is_security_token_valid(),
-                                  self._security_token_expiration(), self._session_key_fingerprint())
-                self._print_log_message(
-                    "%s OAuth security token refreshed and signers reset token_valid=%s token_expiration=%s oauth_key_fingerprint=%s",
+                self.logger.debug(
+                    "%s OAuth security token refreshed and signers reset",
                     self.LOG_PREFIX,
-                    self._is_security_token_valid(),
-                    self._security_token_expiration(),
-                    self._session_key_fingerprint(),
                 )
             else:
-                self.logger.debug("%s OAuth security token refresh skipped; using cached token token_valid=%s token_expiration=%s oauth_key_fingerprint=%s",
-                                  self.LOG_PREFIX, self._is_security_token_valid(),
-                                  self._security_token_expiration(), self._session_key_fingerprint())
-                self._print_log_message(
-                    "%s OAuth security token refresh skipped; using cached token token_valid=%s token_expiration=%s oauth_key_fingerprint=%s",
+                self.logger.debug(
+                    "%s OAuth security token refresh skipped; using cached token",
                     self.LOG_PREFIX,
-                    self._is_security_token_valid(),
-                    self._security_token_expiration(),
-                    self._session_key_fingerprint(),
                 )
         return self._security_token.security_token
 
@@ -584,41 +475,23 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
         Returns:
             bool: True if token was successfully refreshed, False if using cached token or if refresh failed without valid token
         """
-        self.logger.debug("%s Generating new OAuth session key and token old_oauth_key_fingerprint=%s",
-                          self.LOG_PREFIX, self._session_key_fingerprint())
-        self._print_log_message(
-            "%s Generating new OAuth session key and token old_oauth_key_fingerprint=%s",
-            self.LOG_PREFIX,
-            self._session_key_fingerprint(),
-        )
+        self.logger.debug("%s Generating new OAuth session key and token", self.LOG_PREFIX)
         try:
             self._session_key_supplier.refresh()
             self._generate_oauth_token_and_set_state()
             return True
-        except Exception as e:
+        except Exception as error:
             if self._is_security_token_valid():
-                self.logger.error("%s Fetching OAuth token failed; using valid cached token error_type=%s error=%s token_expiration=%s oauth_key_fingerprint=%s",
-                                  self.LOG_PREFIX, type(e).__name__, str(e),
-                                  self._security_token_expiration(), self._session_key_fingerprint())
-                self._print_log_message(
-                    "%s Fetching OAuth token failed; using valid cached token error_type=%s error=%s token_expiration=%s oauth_key_fingerprint=%s",
+                self.logger.error(
+                    "%s Fetching OAuth token failed; using valid cached token error_type=%s",
                     self.LOG_PREFIX,
-                    type(e).__name__,
-                    str(e),
-                    self._security_token_expiration(),
-                    self._session_key_fingerprint(),
+                    type(error).__name__,
                 )
             else:
-                self.logger.error("%s Fetching OAuth token failed and cached token is invalid error_type=%s error=%s token_expiration=%s oauth_key_fingerprint=%s",
-                                  self.LOG_PREFIX, type(e).__name__, str(e),
-                                  self._security_token_expiration(), self._session_key_fingerprint())
-                self._print_log_message(
-                    "%s Fetching OAuth token failed and cached token is invalid error_type=%s error=%s token_expiration=%s oauth_key_fingerprint=%s",
+                self.logger.error(
+                    "%s Fetching OAuth token failed and cached token is invalid error_type=%s",
                     self.LOG_PREFIX,
-                    type(e).__name__,
-                    str(e),
-                    self._security_token_expiration(),
-                    self._session_key_fingerprint(),
+                    type(error).__name__,
                 )
                 raise
             return False
@@ -643,15 +516,7 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
 
         self._basic_signer.reset_signer(self.api_key, self.private_key)
         self._body_signer.reset_signer(self.api_key, self.private_key)
-        self.logger.debug("%s Reset OAuth request signers oauth_key_fingerprint=%s token_expiration=%s",
-                          self.LOG_PREFIX, self._session_key_fingerprint(),
-                          self._security_token_expiration())
-        self._print_log_message(
-            "%s Reset OAuth request signers oauth_key_fingerprint=%s token_expiration=%s",
-            self.LOG_PREFIX,
-            self._session_key_fingerprint(),
-            self._security_token_expiration(),
-        )
+        self.logger.debug("%s Reset OAuth request signers", self.LOG_PREFIX)
 
     def _token_signer_name(self):
         return self.token_signer.__class__.__name__
@@ -691,22 +556,10 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
     def _log_oauth_response(self, response, attempt):
         log_dict = {"attempt": attempt,
                     "status_code": response.status_code,
-                    "url": response.url,
-                    "reason": response.reason,
                     "opc_request_id": self._get_response_opc_request_id(response)}
         if response.ok:
             self.logger.debug("%s OAuth token response received %s",
                               self.LOG_PREFIX, pprint.pformat(log_dict, indent=2))
-            self._print_log_message(
-                "%s OAuth token response received %s",
-                self.LOG_PREFIX,
-                pprint.pformat(log_dict, indent=2),
-            )
         else:
             self.logger.error("%s OAuth token response received %s",
                               self.LOG_PREFIX, pprint.pformat(log_dict, indent=2))
-            self._print_log_message(
-                "%s OAuth token response received %s",
-                self.LOG_PREFIX,
-                pprint.pformat(log_dict, indent=2),
-            )

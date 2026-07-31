@@ -1,3 +1,5 @@
+import ast
+import inspect
 import logging
 import os
 import subprocess
@@ -21,7 +23,7 @@ from oci._vendor import requests
 from oci.base_client import BaseClient
 from oci.circuit_breaker import CircuitBreakerStrategy, NoCircuitBreakerStrategy
 from circuitbreaker import CircuitBreakerMonitor
-from oci.auth.signers import TokenExchangeSigner
+from oci.auth.signers import OauthExchangeTokenSigner, TokenExchangeSigner
 from oci.exceptions import ServiceError, TransientServiceError
 from oci.request import Request
 from oci.response import Response
@@ -441,3 +443,198 @@ def test_token_exchange_signer_proactive_half_life_refresh():
 
     assert signer.get_security_token() == signer.security_token_container.security_token
     signer._refresh_security_token_inner.assert_called_once_with()
+
+
+def make_oauth_exchange_signer():
+    signer = object.__new__(OauthExchangeTokenSigner)
+    signer._setup_logging(True)
+    signer.token_signer = Mock()
+    signer.cert_bundle_verify = True
+    return signer
+
+
+def oauth_response(*, status_code, ok, url, reason, request_id="request-id"):
+    response = MagicMock()
+    response.status_code = status_code
+    response.ok = ok
+    response.url = url
+    response.reason = reason
+    response.headers = {"opc-request-id": request_id}
+    return response
+
+
+def test_oauth_exchange_endpoint_logging_omits_user_controlled_url(caplog, capsys):
+    signer = make_oauth_exchange_signer()
+    endpoint = (
+        "https://endpoint-user-sentinel:endpoint-password-sentinel@"
+        "identity.example.com/oauth?token=endpoint-query-sentinel"
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        signer._set_oauth_token_endpoint(endpoint)
+
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert signer.oauth_token_endpoint == endpoint
+    assert "OAuth endpoint configured" in messages
+    for sentinel in (
+        endpoint,
+        "endpoint-user-sentinel",
+        "endpoint-password-sentinel",
+        "endpoint-query-sentinel",
+    ):
+        assert sentinel not in messages
+    assert capsys.readouterr().out == ""
+
+
+def test_oauth_exchange_exception_logging_omits_exception_text(caplog, capsys):
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = (
+        "https://exception-user-sentinel:exception-password-sentinel@"
+        "identity.example.com/oauth"
+    )
+    exception_message = "client-secret-sentinel response-token-sentinel"
+
+    with (
+        patch.object(signer, "_ensure_token_signer_current"),
+        patch.object(
+            signer,
+            "_post_oauth_request",
+            side_effect=RuntimeError(exception_message),
+        ),
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RuntimeError) as raised,
+    ):
+        signer._make_oauth_request({}, {})
+
+    assert str(raised.value) == exception_message
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "RuntimeError" in messages
+    for sentinel in (
+        signer.oauth_token_endpoint,
+        "exception-user-sentinel",
+        "exception-password-sentinel",
+        "client-secret-sentinel",
+        "response-token-sentinel",
+    ):
+        assert sentinel not in messages
+    assert capsys.readouterr().out == ""
+
+
+def test_oauth_exchange_response_logging_omits_url_reason_and_body(caplog, capsys):
+    signer = make_oauth_exchange_signer()
+    response = oauth_response(
+        status_code=400,
+        ok=False,
+        url=(
+            "https://response-user-sentinel:response-password-sentinel@"
+            "identity.example.com/oauth?token=response-query-sentinel"
+        ),
+        reason="response-reason-secret-sentinel",
+        request_id="safe-request-id",
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        signer._log_oauth_response(response, "initial")
+
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "status_code" in messages
+    assert "safe-request-id" in messages
+    for sentinel in (
+        response.url,
+        "response-user-sentinel",
+        "response-password-sentinel",
+        "response-query-sentinel",
+        "response-reason-secret-sentinel",
+    ):
+        assert sentinel not in messages
+
+    decoded_response = '{"client_secret": "decoded-body-secret-sentinel"}'
+    with pytest.raises(RuntimeError) as raised:
+        signer._get_security_token(decoded_response)
+    assert "decoded-body-secret-sentinel" not in str(raised.value)
+    assert capsys.readouterr().out == ""
+
+
+def test_oauth_exchange_401_refreshes_and_retries_once_without_secret_logs(
+    caplog,
+    capsys,
+):
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = (
+        "https://retry-user-sentinel:retry-password-sentinel@"
+        "identity.example.com/oauth"
+    )
+    unauthorized = oauth_response(
+        status_code=401,
+        ok=False,
+        url=signer.oauth_token_endpoint,
+        reason="retry-reason-secret-sentinel",
+    )
+    success = oauth_response(
+        status_code=200,
+        ok=True,
+        url=signer.oauth_token_endpoint,
+        reason="success-reason-secret-sentinel",
+    )
+
+    with (
+        patch.object(signer, "_ensure_token_signer_current"),
+        patch.object(signer, "_force_refresh_token_signer", return_value=True),
+        patch.object(
+            signer,
+            "_post_oauth_request",
+            side_effect=[unauthorized, success],
+        ) as post_oauth_request,
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = signer._make_oauth_request({}, {})
+
+    assert result is success
+    assert post_oauth_request.call_count == 2
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "attempt': 'initial" in messages
+    assert "attempt': 'retry" in messages
+    for sentinel in (
+        signer.oauth_token_endpoint,
+        "retry-user-sentinel",
+        "retry-password-sentinel",
+        "retry-reason-secret-sentinel",
+        "success-reason-secret-sentinel",
+    ):
+        assert sentinel not in messages
+    assert capsys.readouterr().out == ""
+
+
+def test_oauth_exchange_logging_sinks_reject_sensitive_values_and_stdout():
+    source = inspect.getsource(OauthExchangeTokenSigner)
+    tree = ast.parse(source)
+    prohibited_log_inputs = (
+        "oauth_token_endpoint",
+        "target_compartment",
+        "self.scope",
+        "_session_key_fingerprint",
+        "_security_token_expiration",
+        "_security_token_age_seconds",
+        "_is_security_token_valid",
+        "response.url",
+        "response.reason",
+        "str(error)",
+        "str(e)",
+        "decoded_response",
+    )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "print":
+            pytest.fail("OAuth exchange diagnostics must not write directly to stdout")
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "logger"
+        ):
+            continue
+
+        log_call = ast.unparse(node)
+        for prohibited in prohibited_log_inputs:
+            assert prohibited not in log_call

@@ -71,9 +71,11 @@ preserves the OCI adapter when Object Storage resizes a connection pool.
 The remediation also restores generator-backed chunked requests on external
 urllib3 2.x, gives `TokenExchangeSigner` the existing one-time 401 refresh
 behavior, requires HTTPS with finite exchange timeouts, and prevents token
-exchange credentials or response bodies from entering logs. The Managed MySQL
-composite operation can now poll its Database Management work request through
-a generated-style client operation.
+exchange credentials or response bodies from entering logs. OAuth exchange
+diagnostics also omit user-controlled endpoint URLs, response details,
+exception text, token state, and key fingerprints while retaining safe status
+and event metadata. The Managed MySQL composite operation can now poll its
+Database Management work request through a generated-style client operation.
 
 Synchronization rejects unsafe manifest targets before any repository
 mutation. Manual publication validates Python 3.10 through 3.13, builds and
@@ -82,12 +84,13 @@ checks one artifact, and permits only a protected `pypi` environment on
 
 ## Validation results
 
-The remediation suite passed all 90 tests on Python 3.10.20, 3.11.15,
-3.12.13, and 3.13.13.
+The original remediation suite passed all 90 tests on Python 3.10.20,
+3.11.15, 3.12.13, and 3.13.13. Five OAuth logging regressions extend the
+suite to 95 tests; the complete updated suite passed on Python 3.12.13.
 
 | Check | Result |
 | --- | --- |
-| Focused remediations | R1 through R8 regressions passed, including circuit-breaker disabled paths, urllib3 2.x chunked transport, token exchange refresh/security, Managed MySQL polling, sync path safety, hermetic tag verification, and publication contracts. |
+| Focused remediations | R1 through R8 regressions passed, including circuit-breaker disabled paths, urllib3 2.x chunked transport, token exchange refresh/security, OAuth logging confidentiality, Managed MySQL polling, sync path safety, hermetic tag verification, and publication contracts. |
 | Packaged imports | Every module in the built `oci` package imported successfully. |
 | Reproducible synchronization | Two consecutive syncs from the recorded Oracle tag and commit produced no diff after the first replay. |
 | Fresh no-tags clone | The complete 90-test upgrade suite passed from a fresh Moviri clone created without tags. |

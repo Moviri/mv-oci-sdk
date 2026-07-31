@@ -21,6 +21,9 @@ INIT_OVERLAY_PATH = REPO_ROOT / "upstream" / "oci-init-overlay.py"
 TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "token-exchange-signer-overlay.py"
 )
+OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH = (
+    REPO_ROOT / "upstream" / "oauth-exchange-logging-overlay.patch"
+)
 MANAGED_MYSQL_WORK_REQUEST_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "managed-mysql-get-work-request-overlay.py"
 )
@@ -363,6 +366,20 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
         REPO_ROOT / "src" / "oci" / "auth" / "signers" / "token_exchange_signer.py"
     )
     shutil.copy2(TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH, token_exchange_signer_path)
+
+    run_git(
+        [
+            "apply",
+            "--unidiff-zero",
+            "--check",
+            str(OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH),
+        ],
+        cwd=REPO_ROOT,
+    )
+    run_git(
+        ["apply", "--unidiff-zero", str(OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH)],
+        cwd=REPO_ROOT,
+    )
 
     requests_adapter_path = (
         REPO_ROOT / "src" / "oci" / "_vendor" / "requests" / "adapters.py"
