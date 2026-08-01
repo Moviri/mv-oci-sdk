@@ -17,12 +17,14 @@ from oci._vendor import requests
 from oci.base_client import (
     BaseClient,
     OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME,
+    OCIConnection,
     OCIConnectionPool,
     OCIHTTPAdapter,
     OCIPoolManager,
     OCIProxyManager,
 )
 from oci.monitoring import MonitoringClient
+from oci.object_storage import ObjectStorageClient
 from oci.request import Request
 
 
@@ -55,6 +57,53 @@ class RequestBodyRecorder(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass
+
+
+class NonClosingSocketFile:
+    def __init__(self, buffer):
+        self.buffer = buffer
+
+    def __getattr__(self, name):
+        return getattr(self.buffer, name)
+
+    def close(self):
+        pass
+
+
+class FakeSocket:
+    def __init__(self, response_bytes):
+        self.response_buffer = io.BytesIO(response_bytes)
+        self.sent = bytearray()
+        self.closed = False
+        self.timeout = None
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def sendall(self, data):
+        self.sent.extend(data)
+
+    def makefile(self, *args, **kwargs):
+        return NonClosingSocketFile(self.response_buffer)
+
+    def shutdown(self, *args):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def fake_connection(response_bytes):
+    connection = OCIConnection("example.com")
+    socket = FakeSocket(response_bytes)
+    connection.sock = socket
+    return connection, socket
+
+
+def split_wire_request(socket):
+    headers, separator, body = bytes(socket.sent).partition(b"\r\n\r\n")
+    assert separator == b"\r\n\r\n"
+    return headers + separator, body
 
 
 def valid_config():
@@ -147,6 +196,430 @@ def test_socks_proxy_delegates_to_requests_adapter():
         assert adapter.proxy_manager_for("socks5://proxy.example:1080") is sentinel
 
     parent_proxy_manager.assert_called_once()
+
+
+def test_real_malformed_response_is_sanitized_and_discards_connection(
+    caplog,
+    capsys,
+):
+    sentinel = "response-cookie-secret-sentinel"
+    connection, socket = fake_connection(
+        (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 0\r\n"
+            "Malformed Header Line\r\n"
+            f"Set-Cookie: session={sentinel}\r\n"
+            "\r\n"
+        ).encode()
+    )
+
+    with caplog.at_level(logging.WARNING, logger="urllib3.connection"):
+        connection.request("GET", "/resource", headers={})
+        with pytest.raises(HeaderParsingError) as raised:
+            connection.getresponse()
+
+    captured_output = capsys.readouterr()
+    diagnostics = " ".join(
+        (
+            str(raised.value),
+            captured_output.out,
+            captured_output.err,
+            *(record.getMessage() for record in caplog.records),
+        )
+    )
+    assert sentinel not in diagnostics
+    assert "Failed to parse headers" not in diagnostics
+    assert connection.sock is None
+    assert socket.closed
+
+
+def test_real_valid_response_preserves_urllib3_response_options():
+    connection, _ = fake_connection(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Test: valid\r\n\r\nok"
+    )
+
+    connection.request(
+        "GET",
+        "/resource",
+        headers={},
+        preload_content=False,
+        decode_content=False,
+        enforce_content_length=True,
+    )
+    response = connection.getresponse()
+
+    assert response.status == 200
+    assert response.reason == "OK"
+    assert response.headers["X-Test"] == "valid"
+    assert response._request_url == "/resource"
+    assert response.decode_content is False
+    assert response.enforce_content_length is True
+    assert response._original_response is not None
+    assert response.read() == b"ok"
+
+
+def test_base_client_resets_once_for_real_malformed_response(
+    monkeypatch,
+    caplog,
+    capsys,
+):
+    connection, socket = fake_connection(
+        (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 0\r\n"
+            "Malformed Header Line\r\n"
+            "Set-Cookie: session=response-cookie-secret-sentinel\r\n"
+            "\r\n"
+        ).encode()
+    )
+
+    class ConnectionSession:
+        def __init__(self):
+            self.request_count = 0
+            self.close_count = 0
+
+        def request(self, method, url, **kwargs):
+            self.request_count += 1
+            connection.request(method, "/resource", headers=kwargs["headers"])
+            return connection.getresponse()
+
+        def close(self):
+            self.close_count += 1
+
+    client = make_client()
+    old_session = ConnectionSession()
+    replacement_session = MagicMock()
+    client.session = old_session
+    monkeypatch.setattr(
+        "oci.base_client.copy.copy",
+        Mock(return_value=replacement_session),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(exceptions.RequestException) as raised:
+            client.request(sdk_request())
+
+    captured_output = capsys.readouterr()
+    diagnostics = " ".join(
+        (
+            str(raised.value),
+            captured_output.out,
+            captured_output.err,
+            *(record.getMessage() for record in caplog.records),
+        )
+    )
+    assert "response-cookie-secret-sentinel" not in diagnostics
+    assert old_session.request_count == 1
+    assert old_session.close_count == 1
+    replacement_session.request.assert_not_called()
+    assert client.session is replacement_session
+    assert connection.sock is None
+    assert socket.closed
+
+
+def test_no_expect_header_uses_normal_urllib3_body_path(monkeypatch):
+    connection, socket = fake_connection(b"")
+    wait_for_read = Mock(return_value=True)
+    monkeypatch.setattr(urllib3.util, "wait_for_read", wait_for_read)
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=b"payload",
+        headers={"Content-Length": "7"},
+    )
+
+    _, body = split_wire_request(socket)
+    assert body == b"payload"
+    wait_for_read.assert_not_called()
+
+
+def test_expect_timeout_sends_body_once(monkeypatch):
+    connection, socket = fake_connection(b"")
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=False))
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=b"payload",
+        headers={"Expect": "100-continue", "Content-Length": "7"},
+    )
+
+    headers, body = split_wire_request(socket)
+    assert b"Expect: 100-continue\r\n" in headers
+    assert body == b"payload"
+
+
+def test_expect_100_continue_sends_headers_before_body_once(monkeypatch):
+    connection, socket = fake_connection(
+        (
+            b"HTTP/1.1 100 Continue\r\nX-Interim: accepted\r\n\r\n"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        )
+    )
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=True))
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=b"payload",
+        headers={"Expect": "100-continue", "Content-Length": "7"},
+    )
+    response = connection.getresponse()
+
+    _, body = split_wire_request(socket)
+    assert body == b"payload"
+    assert response.status == 200
+
+
+@pytest.mark.parametrize("status", (401, 412, 413))
+def test_expect_immediate_final_response_preserves_status_and_sends_no_body(
+    monkeypatch,
+    status,
+):
+    connection, socket = fake_connection(
+        (
+            f"HTTP/1.1 {status} Rejected\r\n"
+            "Content-Length: 0\r\n"
+            "X-Test: early-final\r\n"
+            "\r\n"
+        ).encode()
+    )
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=True))
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=b"payload",
+        headers={"Expect": "100-continue", "Content-Length": "7"},
+        preload_content=False,
+        decode_content=False,
+        enforce_content_length=True,
+    )
+    response = connection.getresponse()
+
+    _, body = split_wire_request(socket)
+    assert body == b""
+    assert response.status == status
+    assert response.headers["X-Test"] == "early-final"
+    assert response._request_url == "/resource"
+    assert response.decode_content is False
+    assert response.enforce_content_length is True
+
+
+def test_expect_immediate_final_does_not_advance_chunked_generator(monkeypatch):
+    connection, socket = fake_connection(
+        b"HTTP/1.1 413 Too Large\r\nContent-Length: 0\r\n\r\n"
+    )
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=True))
+    iterations = []
+
+    def body():
+        iterations.append("started")
+        yield b"payload"
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=body(),
+        headers={"Expect": "100-continue"},
+        chunked=True,
+    )
+    response = connection.getresponse()
+
+    headers, wire_body = split_wire_request(socket)
+    assert response.status == 413
+    assert iterations == []
+    assert b"Transfer-Encoding: chunked\r\n" in headers
+    assert wire_body == b""
+
+
+def test_expect_state_is_reset_on_reused_connection(monkeypatch):
+    connection, socket = fake_connection(
+        b"HTTP/1.1 412 Rejected\r\nContent-Length: 0\r\n\r\n"
+    )
+    wait_for_read = Mock(return_value=True)
+    monkeypatch.setattr(urllib3.util, "wait_for_read", wait_for_read)
+
+    connection.request(
+        "PUT",
+        "/first",
+        body=b"first",
+        headers={"Expect": "100-continue", "Content-Length": "5"},
+    )
+    assert connection.getresponse().status == 412
+    connection.request(
+        "PUT",
+        "/second",
+        body=b"second",
+        headers={"Content-Length": "6"},
+    )
+
+    assert bytes(socket.sent).endswith(b"\r\n\r\nsecond")
+    wait_for_read.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "wire_response",
+    (
+        b"",
+        b"HTTP/1.1 100 Continue\r\nX-Incomplete: true\r\n",
+        b"HTTP/1.1 100 Continue\r\nMalformed Header\r\n\r\n",
+        b"not-http\r\n\r\n",
+    ),
+)
+def test_expect_invalid_interim_response_fails_without_consuming_body(
+    monkeypatch,
+    wire_response,
+):
+    connection, socket = fake_connection(wire_response)
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=True))
+    iterations = []
+
+    def body():
+        iterations.append("started")
+        yield b"payload"
+
+    with pytest.raises(ProtocolError):
+        connection.request(
+            "PUT",
+            "/resource",
+            body=body(),
+            headers={"Expect": "100-continue"},
+            chunked=True,
+        )
+
+    assert iterations == []
+    assert connection.sock is None
+    assert socket.closed
+    _, wire_body = split_wire_request(socket)
+    assert wire_body == b""
+
+
+def test_expect_other_informational_response_is_handled_before_continue(
+    monkeypatch,
+):
+    connection, socket = fake_connection(
+        (
+            b"HTTP/1.1 103 Early Hints\r\nLink: </resource>\r\n\r\n"
+            b"HTTP/1.1 100 Continue\r\n\r\n"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        )
+    )
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=True))
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=b"payload",
+        headers={"Expect": "100-continue", "Content-Length": "7"},
+    )
+
+    _, body = split_wire_request(socket)
+    assert body == b"payload"
+    assert connection.getresponse().status == 200
+
+
+@pytest.mark.parametrize(
+    ("header", "value"),
+    (
+        ("Expect", "100-continue"),
+        ("EXPECT", "100-CONTINUE"),
+        ("eXpEcT", "  100-Continue  "),
+    ),
+)
+def test_expect_header_matching_is_case_and_whitespace_insensitive(
+    monkeypatch,
+    header,
+    value,
+):
+    connection, socket = fake_connection(
+        b"HTTP/1.1 413 Rejected\r\nContent-Length: 0\r\n\r\n"
+    )
+    wait_for_read = Mock(return_value=True)
+    monkeypatch.setattr(urllib3.util, "wait_for_read", wait_for_read)
+
+    connection.request(
+        "PUT",
+        "/resource",
+        body=b"payload",
+        headers={header: value, "Content-Length": "7"},
+    )
+
+    assert connection.getresponse().status == 413
+    _, body = split_wire_request(socket)
+    assert body == b""
+    wait_for_read.assert_called_once()
+
+
+def test_expect_early_final_uses_malformed_header_protection(
+    monkeypatch,
+    caplog,
+):
+    sentinel = "early-response-cookie-secret-sentinel"
+    connection, socket = fake_connection(
+        (
+            "HTTP/1.1 413 Rejected\r\n"
+            "Content-Length: 0\r\n"
+            "Malformed Header Line\r\n"
+            f"Set-Cookie: session={sentinel}\r\n"
+            "\r\n"
+        ).encode()
+    )
+    monkeypatch.setattr(urllib3.util, "wait_for_read", Mock(return_value=True))
+
+    with caplog.at_level(logging.WARNING, logger="urllib3.connection"):
+        connection.request(
+            "PUT",
+            "/resource",
+            body=b"payload",
+            headers={"Expect": "100-continue", "Content-Length": "7"},
+        )
+        with pytest.raises(HeaderParsingError) as raised:
+            connection.getresponse()
+
+    diagnostics = " ".join(
+        (str(raised.value), *(record.getMessage() for record in caplog.records))
+    )
+    assert sentinel not in diagnostics
+    assert "Failed to parse headers" not in diagnostics
+    assert connection.sock is None
+    assert socket.closed
+    _, body = split_wire_request(socket)
+    assert body == b""
+
+
+@pytest.mark.parametrize("operation", ("put_object", "upload_part"))
+def test_object_storage_upload_operations_retain_expect_default(operation):
+    client = ObjectStorageClient(
+        valid_config(),
+        signer=Mock(),
+        service_endpoint="https://objectstorage.example.com",
+    )
+    client.base_client.call_api = Mock(return_value="response")
+    none_retry = retry.NoneRetryStrategy()
+
+    if operation == "put_object":
+        result = client.put_object(
+            "namespace",
+            "bucket",
+            "object",
+            b"payload",
+            retry_strategy=none_retry,
+        )
+    else:
+        result = client.upload_part(
+            "namespace",
+            "bucket",
+            "object",
+            "upload-id",
+            1,
+            b"payload",
+            retry_strategy=none_retry,
+        )
+
+    assert result == "response"
+    assert client.base_client.call_api.call_args.kwargs["header_params"]["expect"] == "100-continue"
 
 
 def test_generator_body_uses_urllib3_chunked_request_path():

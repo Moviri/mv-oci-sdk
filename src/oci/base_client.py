@@ -4,6 +4,7 @@
 
 from __future__ import absolute_import
 import json
+import io
 import logging
 import platform
 
@@ -22,11 +23,12 @@ from datetime import date, datetime, timezone
 from timeit import default_timer as timer
 from ._vendor import requests, six, sseclient
 import urllib3
-from urllib3.exceptions import HeaderParsingError
+from urllib3.exceptions import HeaderParsingError, ProtocolError
+from urllib3.util.response import assert_header_parsing
 from dateutil.parser import parse
 from dateutil import tz
 import functools
-from six.moves.http_client import HTTPResponse
+from six.moves.http_client import HTTPResponse, parse_headers, _MAXHEADERS, _MAXLINE
 
 from . import constants, exceptions, regions, retry
 from .auth import signers
@@ -37,7 +39,7 @@ from .response import Response
 from .circuit_breaker import CircuitBreakerStrategy, NoCircuitBreakerStrategy
 from circuitbreaker import CircuitBreakerMonitor
 from .version import __version__
-from .util import NONE_SENTINEL, Sentinel, extract_service_endpoint
+from .util import NONE_SENTINEL, Sentinel, extract_service_endpoint, record_body_position_for_rewind, rewind_body
 missing = Sentinel("Missing")
 APPEND_USER_AGENT_ENV_VAR_NAME = "OCI_SDK_APPEND_USER_AGENT"
 PROPAGATION_ENABLED_ENV_VAR_NAME = "PROPAGATION_ENABLED"
@@ -181,34 +183,103 @@ VALID_COLLECTION_FORMAT_TYPES = {
 }
 
 
-def _read_all_headers(fp):
-    current = None
-    while current != b'\r\n':
-        current = fp.readline()
-
-
 def _to_bytes(input_buffer):
     bytes_buffer = []
     for chunk in input_buffer:
         if isinstance(chunk, six.text_type):
-            bytes_buffer.append(chunk.encode('utf-8'))
+            bytes_buffer.append(chunk.encode("utf-8"))
         else:
             bytes_buffer.append(chunk)
-    msg = b"\r\n".join(bytes_buffer)
-    return msg
+    return b"\r\n".join(bytes_buffer)
 
 
-def _is_100_continue(line):
-    parts = line.split(None, 2)
-    return (
-        len(parts) >= 3 and parts[0].startswith(b'HTTP/') and
-        parts[1] == b'100')
+def _sanitized_header_parsing_error():
+    return HeaderParsingError([], b"")
+
+
+def _validate_response_headers(message):
+    try:
+        assert_header_parsing(message)
+    except (HeaderParsingError, TypeError):
+        raise _sanitized_header_parsing_error() from None
+
+
+def _read_interim_headers(fp):
+    header_lines = []
+    for _ in range(_MAXHEADERS + 1):
+        line = fp.readline(_MAXLINE + 1)
+        if not line:
+            raise _OCIExpectResponseError(
+                "Incomplete response during Expect handling"
+            )
+        if len(line) > _MAXLINE:
+            raise _OCIExpectResponseError(
+                "Invalid response during Expect handling"
+            )
+        if line in (b"\r\n", b"\n"):
+            break
+        header_lines.append(line)
+    else:
+        raise _OCIExpectResponseError(
+            "Invalid response during Expect handling"
+        )
+
+    try:
+        message = parse_headers(
+            io.BytesIO(b"".join(header_lines) + b"\r\n")
+        )
+        _validate_response_headers(message)
+    except HeaderParsingError:
+        raise _OCIExpectResponseError(
+            "Invalid response during Expect handling"
+        ) from None
+
+
+def _parse_expect_status_line(line):
+    if not line or len(line) > _MAXLINE:
+        raise _OCIExpectResponseError(
+            "Incomplete response during Expect handling"
+        )
+
+    parts = line.rstrip(b"\r\n").split(None, 2)
+    if (
+        len(parts) < 2
+        or not parts[0].startswith(b"HTTP/")
+        or len(parts[1]) != 3
+        or not parts[1].isdigit()
+    ):
+        raise _OCIExpectResponseError(
+            "Invalid response during Expect handling"
+        )
+
+    try:
+        version = parts[0].decode("ascii")
+        status = int(parts[1])
+        reason = parts[2].decode("iso-8859-1") if len(parts) == 3 else ""
+    except (UnicodeDecodeError, ValueError):
+        raise _OCIExpectResponseError(
+            "Invalid response during Expect handling"
+        ) from None
+
+    if not 100 <= status <= 999:
+        raise _OCIExpectResponseError(
+            "Invalid response during Expect handling"
+        )
+    return version, status, reason
+
+
+class _OCIExpectResponseReceived(Exception):
+    """Stop urllib3 before it advances a body rejected by the service."""
+
+
+class _OCIExpectResponseError(ProtocolError):
+    """A sanitized failure while parsing an interim Expect response."""
 
 
 class OCIHTTPResponse(HTTPResponse):
 
     def __init__(self, *args, **kwargs):
-        self._status_tuple = kwargs.pop('status_tuple')
+        self._status_tuple = kwargs.pop("status_tuple", None)
         HTTPResponse.__init__(self, *args, **kwargs)
 
     def _read_status(self):
@@ -216,8 +287,15 @@ class OCIHTTPResponse(HTTPResponse):
             status_tuple = self._status_tuple
             self._status_tuple = None
             return status_tuple
-        else:
-            return HTTPResponse._read_status(self)
+        return HTTPResponse._read_status(self)
+
+    def begin(self):
+        HTTPResponse.begin(self)
+        try:
+            _validate_response_headers(self.msg)
+        except HeaderParsingError:
+            self.close()
+            raise
 
 
 try:
@@ -229,94 +307,127 @@ except AttributeError:
 
 
 class OCIConnection(BaseHTTPSConnection):
-    """ HTTPConnection with 100 Continue support. """
+    """HTTPConnection with safe header parsing and 100 Continue support."""
+
+    EXPECT_CONTINUE_TIMEOUT_SECONDS = 3
+    MAX_INFORMATIONAL_RESPONSES = 5
 
     def __init__(self, *args, **kwargs):
         super(OCIConnection, self).__init__(*args, **kwargs)
         # urllib3 connect() expects assert_hostname/assert_fingerprint attrs to
         # exist on the connection object. Ensure compatibility across base
         # classes/versions where these may not be initialized.
-        if not hasattr(self, 'assert_hostname'):
-            self.assert_hostname = kwargs.get('assert_hostname', None)
-        if not hasattr(self, 'assert_fingerprint'):
-            self.assert_fingerprint = kwargs.get('assert_fingerprint', None)
-        self._original_response_cls = self.response_class
+        if not hasattr(self, "assert_hostname"):
+            self.assert_hostname = kwargs.get("assert_hostname", None)
+        if not hasattr(self, "assert_fingerprint"):
+            self.assert_fingerprint = kwargs.get("assert_fingerprint", None)
+        self._original_response_cls = OCIHTTPResponse
+        self.response_class = self._original_response_cls
         self._response_received = False
         self._using_expect_header = False
         self.logger = logging.getLogger("{}.{}".format(__name__, id(self)))
 
-    def _send_request(self, method, url, body, headers, *args, **kwargs):
+    @staticmethod
+    def _has_expect_continue(headers):
+        for header, value in (headers or {}).items():
+            if (
+                str(header).lower() == "expect"
+                and isinstance(value, str)
+                and value.strip().lower() == "100-continue"
+            ):
+                return True
+        return False
+
+    def request(self, method, url, body=None, headers=None, *args, **kwargs):
         self._response_received = False
-        if headers.get('expect', '') == '100-continue':
-            if self.debuglevel > 0:
-                print('Using Expect header...')
-            self._using_expect_header = True
-        else:
-            if self.debuglevel > 0:
-                print('Not using Expect header...')
-            self._using_expect_header = False
-            self.response_class = self._original_response_cls
-        rval = super(OCIConnection, self)._send_request(
-            method, url, body, headers, *args, **kwargs)
-        self._expect_header_set = False
-        return rval
+        self._using_expect_header = self._has_expect_continue(headers)
+        self.response_class = self._original_response_cls
+        try:
+            return super(OCIConnection, self).request(
+                method, url, body=body, headers=headers, *args, **kwargs
+            )
+        except _OCIExpectResponseReceived:
+            return None
+        except _OCIExpectResponseError:
+            self.close()
+            raise
+
+    def endheaders(self, *args, **kwargs):
+        super(OCIConnection, self).endheaders(*args, **kwargs)
+        if self._response_received:
+            raise _OCIExpectResponseReceived()
+
+    def getresponse(self):
+        try:
+            return super(OCIConnection, self).getresponse()
+        except HeaderParsingError:
+            self.close()
+            raise
 
     def _send_output(self, message_body=None, *args, **kwargs):
         self._buffer.extend((b"", b""))
         msg = _to_bytes(self._buffer)
         del self._buffer[:]
 
-        if not self._using_expect_header:
-            if isinstance(message_body, bytes):
-                msg += message_body
-                message_body = None
+        if not self._using_expect_header and isinstance(message_body, bytes):
+            msg += message_body
+            message_body = None
 
         self.send(msg)
 
         if self._using_expect_header:
-            if self.debuglevel > 0:
-                print('Waiting 3 seconds for 100-continue response...')
-            if urllib3.util.wait_for_read(self.sock, 3):
-                self._handle_expect_response(message_body)
+            if urllib3.util.wait_for_read(
+                self.sock, self.EXPECT_CONTINUE_TIMEOUT_SECONDS
+            ):
+                self._handle_expect_response()
                 return
 
         if message_body is not None:
-            if self.debuglevel > 0:
-                print('Timeout waiting for 100-continue response, sending message body...')
             self.send(message_body)
 
-    def _handle_expect_response(self, message_body):
-        fp = self.sock.makefile('rb', 0)
+    def _handle_expect_response(self):
+        self.sock.settimeout(self.EXPECT_CONTINUE_TIMEOUT_SECONDS)
+        fp = self.sock.makefile("rb", 0)
         try:
-            line = fp.readline()
-            parts = line.split(None, 2)
-            if self.debuglevel > 0:
-                print(line)
-            if _is_100_continue(line):
-                if self.debuglevel > 0:
-                    print('Received 100-continue response, sending message body...')
-                _read_all_headers(fp)
-                self._send_message_body(message_body)
-            elif len(parts) == 3 and parts[0].startswith(b'HTTP/'):
-                if self.debuglevel > 0:
-                    print('Received non-100-continue response, abort request...')
-                status_tuple = (parts[0].decode('ascii'),
-                                int(parts[1]), parts[2].decode('ascii'))
-                response_class = functools.partial(
-                    OCIHTTPResponse, status_tuple=status_tuple)
-                self.response_class = response_class
+            informational_responses = 0
+            while True:
+                status_tuple = _parse_expect_status_line(
+                    fp.readline(_MAXLINE + 1)
+                )
+                status = status_tuple[1]
+
+                if status == 100:
+                    _read_interim_headers(fp)
+                    return
+
+                if 100 <= status < 200:
+                    _read_interim_headers(fp)
+                    informational_responses += 1
+                    if informational_responses >= self.MAX_INFORMATIONAL_RESPONSES:
+                        raise _OCIExpectResponseError(
+                            "Too many informational responses during Expect handling"
+                        )
+                    continue
+
+                self.response_class = functools.partial(
+                    OCIHTTPResponse, status_tuple=status_tuple
+                )
                 self._response_received = True
+                return
+        except _OCIExpectResponseError:
+            raise
+        except Exception:
+            raise _OCIExpectResponseError(
+                "Invalid response during Expect handling"
+            ) from None
         finally:
             fp.close()
+            self.sock.settimeout(self.timeout)
 
-    def _send_message_body(self, message_body):
-        if message_body is not None:
-            self.send(message_body)
-
-    def send(self, str):
+    def send(self, data):
         if self._response_received:
-            return
-        return super(OCIConnection, self).send(str)
+            return None
+        return super(OCIConnection, self).send(data)
 
 
 class OCIConnectionPool(urllib3.HTTPSConnectionPool):
@@ -772,6 +883,22 @@ class BaseClient(object):
         )
 
         if self.is_instance_principal_or_resource_principal_signer():
+            refresh_body_requires_rewind = body is not None and hasattr(body, "read")
+            refresh_body_replayable = True
+            refresh_body_position = None
+            if refresh_body_requires_rewind:
+                try:
+                    refresh_body_replayable, refresh_body_position = (
+                        record_body_position_for_rewind(body)
+                    )
+                except Exception:
+                    refresh_body_replayable = False
+            elif body is not None and not isinstance(body, (str, bytes, bytearray)):
+                try:
+                    refresh_body_replayable = iter(body) is not body
+                except TypeError:
+                    refresh_body_replayable = True
+
             call_attempts = 0
             while call_attempts < 2:
                 try:
@@ -780,6 +907,13 @@ class BaseClient(object):
                     call_attempts += 1
                     if e.status == 401 and call_attempts < 2:
                         self.signer.refresh_security_token()
+                        if not refresh_body_replayable:
+                            raise
+                        if (
+                            refresh_body_requires_rewind
+                            and not rewind_body(body, refresh_body_position)
+                        ):
+                            raise
                     else:
                         raise
         else:

@@ -36,6 +36,9 @@ TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH = (
 OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "oauth-exchange-logging-overlay.patch"
 )
+BASE_CLIENT_TRANSPORT_OVERLAY_PATH = (
+    REPO_ROOT / "upstream" / "base-client-transport-overlay.py"
+)
 REQUESTS_AUTH_OVERLAY_PATH = REPO_ROOT / "upstream" / "requests-auth-overlay.py"
 
 
@@ -312,6 +315,48 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     base_client_path = REPO_ROOT / "src" / "oci" / "base_client.py"
     replace_exact(
         base_client_path,
+        "import json\n",
+        "import json\nimport io\n",
+        "transport response buffer import",
+    )
+    replace_exact(
+        base_client_path,
+        "from urllib3.exceptions import HeaderParsingError\n",
+        (
+            "from urllib3.exceptions import HeaderParsingError, ProtocolError\n"
+            "from urllib3.util.response import assert_header_parsing\n"
+        ),
+        "transport validation imports",
+    )
+    replace_exact(
+        base_client_path,
+        "from six.moves.http_client import HTTPResponse\n",
+        "from six.moves.http_client import HTTPResponse, parse_headers, _MAXHEADERS, _MAXLINE\n",
+        "bounded response parser imports",
+    )
+    replace_exact(
+        base_client_path,
+        "from .util import NONE_SENTINEL, Sentinel, extract_service_endpoint\n",
+        (
+            "from .util import NONE_SENTINEL, Sentinel, extract_service_endpoint, "
+            "record_body_position_for_rewind, rewind_body\n"
+        ),
+        "token refresh body replay imports",
+    )
+    transport_overlay = BASE_CLIENT_TRANSPORT_OVERLAY_PATH.read_text(
+        encoding="utf-8"
+    )
+    if not transport_overlay.endswith("\n"):
+        raise RuntimeError("Base client transport overlay must end with a newline")
+    replace_between(
+        base_client_path,
+        "def _read_all_headers(fp):\n",
+        "class OCIConnectionPool(urllib3.HTTPSConnectionPool):\n",
+        transport_overlay + "\n\n",
+        "OCI connection transport",
+    )
+    replace_exact(
+        base_client_path,
         'OCI_HEADER_PARSING_ERROR_MAX_RETRIES = "OCI_HEADER_PARSING_ERROR_MAX_RETRIES"\n',
         "",
         "obsolete hidden header retry setting",
@@ -433,6 +478,58 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     )
     replace_exact(
         base_client_path,
+        (
+            "        if self.is_instance_principal_or_resource_principal_signer():\n"
+            "            call_attempts = 0\n"
+            "            while call_attempts < 2:\n"
+            "                try:\n"
+            "                    return self.request(request, allow_control_chars, operation_name, api_reference_link)\n"
+            "                except exceptions.ServiceError as e:\n"
+            "                    call_attempts += 1\n"
+            "                    if e.status == 401 and call_attempts < 2:\n"
+            "                        self.signer.refresh_security_token()\n"
+            "                    else:\n"
+            "                        raise\n"
+        ),
+        (
+            "        if self.is_instance_principal_or_resource_principal_signer():\n"
+            "            refresh_body_requires_rewind = body is not None and hasattr(body, \"read\")\n"
+            "            refresh_body_replayable = True\n"
+            "            refresh_body_position = None\n"
+            "            if refresh_body_requires_rewind:\n"
+            "                try:\n"
+            "                    refresh_body_replayable, refresh_body_position = (\n"
+            "                        record_body_position_for_rewind(body)\n"
+            "                    )\n"
+            "                except Exception:\n"
+            "                    refresh_body_replayable = False\n"
+            "            elif body is not None and not isinstance(body, (str, bytes, bytearray)):\n"
+            "                try:\n"
+            "                    refresh_body_replayable = iter(body) is not body\n"
+            "                except TypeError:\n"
+            "                    refresh_body_replayable = True\n\n"
+            "            call_attempts = 0\n"
+            "            while call_attempts < 2:\n"
+            "                try:\n"
+            "                    return self.request(request, allow_control_chars, operation_name, api_reference_link)\n"
+            "                except exceptions.ServiceError as e:\n"
+            "                    call_attempts += 1\n"
+            "                    if e.status == 401 and call_attempts < 2:\n"
+            "                        self.signer.refresh_security_token()\n"
+            "                        if not refresh_body_replayable:\n"
+            "                            raise\n"
+            "                        if (\n"
+            "                            refresh_body_requires_rewind\n"
+            "                            and not rewind_body(body, refresh_body_position)\n"
+            "                        ):\n"
+            "                            raise\n"
+            "                    else:\n"
+            "                        raise\n"
+        ),
+        "body-safe refreshable signer retry",
+    )
+    replace_exact(
+        base_client_path,
         "self.raise_transient_service_error(request, response, service_code, message, operation_name, api_reference_link, target_service, request_endpoint, client_version, timestamp, deserialized_data)\n",
         "self.raise_transient_service_error(request, response, service_code, message, operation_name, api_reference_link, target_service, request_endpoint, client_version, None, deserialized_data)\n",
         "TransientServiceError timestamp",
@@ -514,7 +611,7 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
         ),
         (
             "    def _set_oauth_token_endpoint(self, oauth_token_endpoint):\n"
-            "        if not oauth_token_endpoint:\n"
+            "        if oauth_token_endpoint is None:\n"
             "            oauth_token_endpoint = self._fetch_oauth_token_endpoint()\n"
             "        self.oauth_token_endpoint = self._validate_oauth_token_endpoint(\n"
             "            oauth_token_endpoint\n"

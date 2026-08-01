@@ -1,4 +1,5 @@
 import ast
+import io
 import inspect
 import logging
 import os
@@ -25,7 +26,11 @@ from oci._vendor.requests import auth as requests_auth
 from oci.base_client import BaseClient
 from oci.circuit_breaker import CircuitBreakerStrategy, NoCircuitBreakerStrategy
 from circuitbreaker import CircuitBreakerMonitor
-from oci.auth.signers import OauthExchangeTokenSigner, TokenExchangeSigner
+from oci.auth.signers import (
+    InstancePrincipalsSecurityTokenSigner,
+    OauthExchangeTokenSigner,
+    TokenExchangeSigner,
+)
 from oci.exceptions import ServiceError, TransientServiceError
 from oci.request import Request
 from oci.response import Response
@@ -52,6 +57,21 @@ def successful_http_response():
     response.content = b""
     response.elapsed = 0
     return response
+
+
+def test_base_client_transport_matches_durable_overlay():
+    source = (ROOT / "src" / "oci" / "base_client.py").read_text(
+        encoding="utf-8"
+    )
+    transport = source[
+        source.index("def _to_bytes(input_buffer):\n"):
+        source.index("class OCIConnectionPool(urllib3.HTTPSConnectionPool):\n")
+    ]
+    overlay = (
+        ROOT / "upstream" / "base-client-transport-overlay.py"
+    ).read_text(encoding="utf-8")
+
+    assert transport == overlay + "\n\n"
 
 
 def sdk_request():
@@ -368,6 +388,163 @@ def test_token_exchange_signer_propagates_second_401():
     signer.refresh_security_token.assert_called_once_with()
 
 
+REFRESHABLE_SIGNER_CLASSES = (
+    OauthExchangeTokenSigner,
+    TokenExchangeSigner,
+    InstancePrincipalsSecurityTokenSigner,
+)
+
+
+def make_refreshable_signer_client(signer_class):
+    signer = object.__new__(signer_class)
+    signer.refresh_security_token = Mock()
+    client = BaseClient(
+        "test",
+        valid_config("/tmp/mv-oci-sdk-test-key.pem"),
+        signer,
+        {},
+        service_endpoint="https://example.com",
+    )
+    return client, signer
+
+
+def unauthorized(message="expired token"):
+    return ServiceError(401, "NotAuthenticated", {}, message)
+
+
+@pytest.mark.parametrize("signer_class", REFRESHABLE_SIGNER_CLASSES)
+def test_refreshable_signer_rewinds_file_body_from_original_offset(signer_class):
+    client, signer = make_refreshable_signer_client(signer_class)
+    body = io.BytesIO(b"prefix-payload")
+    body.seek(len(b"prefix-"))
+    observed_bodies = []
+    success = Response(200, {}, "complete", None)
+
+    def request(request, *args):
+        observed_bodies.append(request.body.read())
+        if len(observed_bodies) == 1:
+            raise unauthorized()
+        return success
+
+    client.request = Mock(side_effect=request)
+
+    assert client.call_api("/", "PUT", body=body) is success
+    assert observed_bodies == [b"payload", b"payload"]
+    assert client.request.call_count == 2
+    signer.refresh_security_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("signer_class", REFRESHABLE_SIGNER_CLASSES)
+def test_refreshable_signer_replays_immutable_bytes(signer_class):
+    client, signer = make_refreshable_signer_client(signer_class)
+    observed_bodies = []
+    success = Response(200, {}, "complete", None)
+
+    def request(request, *args):
+        observed_bodies.append(request.body)
+        if len(observed_bodies) == 1:
+            raise unauthorized()
+        return success
+
+    client.request = Mock(side_effect=request)
+
+    assert client.call_api("/", "PUT", body=b"payload") is success
+    assert observed_bodies == [b"payload", b"payload"]
+    assert client.request.call_count == 2
+    signer.refresh_security_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("signer_class", REFRESHABLE_SIGNER_CLASSES)
+def test_refreshable_signer_does_not_replay_generator(signer_class):
+    client, signer = make_refreshable_signer_client(signer_class)
+    iterations = []
+    observed_bodies = []
+
+    def body():
+        iterations.append("started")
+        yield b"first"
+        yield b"second"
+
+    def request(request, *args):
+        observed_bodies.append(list(request.body))
+        raise unauthorized()
+
+    client.request = Mock(side_effect=request)
+
+    with pytest.raises(ServiceError) as raised:
+        client.call_api("/", "PUT", body=body())
+
+    assert raised.value.message == "expired token"
+    assert observed_bodies == [[b"first", b"second"]]
+    assert iterations == ["started"]
+    assert client.request.call_count == 1
+    signer.refresh_security_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("signer_class", REFRESHABLE_SIGNER_CLASSES)
+def test_refreshable_signer_does_not_retry_when_rewind_fails(signer_class):
+    class FailingRewindBody(io.BytesIO):
+        fail_rewind = False
+
+        def seek(self, *args, **kwargs):
+            if self.fail_rewind:
+                raise OSError("rewind failed")
+            return super().seek(*args, **kwargs)
+
+    client, signer = make_refreshable_signer_client(signer_class)
+    body = FailingRewindBody(b"payload")
+    observed_bodies = []
+
+    def request(request, *args):
+        observed_bodies.append(request.body.read())
+        body.fail_rewind = True
+        raise unauthorized()
+
+    client.request = Mock(side_effect=request)
+
+    with pytest.raises(ServiceError) as raised:
+        client.call_api("/", "PUT", body=body)
+
+    assert raised.value.message == "expired token"
+    assert observed_bodies == [b"payload"]
+    assert client.request.call_count == 1
+    signer.refresh_security_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("signer_class", REFRESHABLE_SIGNER_CLASSES)
+def test_refreshable_signer_second_401_has_complete_body(signer_class):
+    client, signer = make_refreshable_signer_client(signer_class)
+    body = io.BytesIO(b"payload")
+    observed_bodies = []
+
+    def request(request, *args):
+        observed_bodies.append(request.body.read())
+        if len(observed_bodies) == 1:
+            raise unauthorized()
+        raise unauthorized("still unauthorized")
+
+    client.request = Mock(side_effect=request)
+
+    with pytest.raises(ServiceError) as raised:
+        client.call_api("/", "PUT", body=body)
+
+    assert raised.value.message == "still unauthorized"
+    assert observed_bodies == [b"payload", b"payload"]
+    assert client.request.call_count == 2
+    signer.refresh_security_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("signer_class", REFRESHABLE_SIGNER_CLASSES)
+def test_refreshable_signer_bodyless_get_regression(signer_class):
+    client, signer = make_refreshable_signer_client(signer_class)
+    success = Response(200, {}, "complete", None)
+    client.request = Mock(side_effect=[unauthorized(), success])
+
+    assert client.call_api("/", "GET") is success
+    assert client.request.call_count == 2
+    signer.refresh_security_token.assert_called_once_with()
+
+
 @pytest.mark.parametrize(
     "domain_url",
     [
@@ -534,6 +711,34 @@ def test_oauth_exchange_rejects_invalid_endpoint_before_session_use(endpoint):
         signer._set_oauth_token_endpoint(endpoint)
 
     session_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ("", "   ", False, 0, [], {}),
+    ids=("empty", "whitespace", "false", "zero", "list", "mapping"),
+)
+def test_oauth_exchange_rejects_explicit_falsy_endpoint_without_discovery(
+    endpoint,
+    caplog,
+):
+    signer = make_oauth_exchange_signer()
+
+    with (
+        patch.object(signer, "_fetch_oauth_token_endpoint") as discover,
+        patch(
+            "oci.auth.signers.oauth_exhange_token_signer.requests.Session"
+        ) as session_factory,
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(ValueError, match="oauth_token_endpoint"),
+    ):
+        signer._set_oauth_token_endpoint(endpoint)
+
+    discover.assert_not_called()
+    session_factory.assert_not_called()
+    assert "OAuth endpoint configured" not in " ".join(
+        record.getMessage() for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize(

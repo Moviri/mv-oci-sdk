@@ -151,7 +151,7 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
         self._last_fetch_time = None
 
     def _set_oauth_token_endpoint(self, oauth_token_endpoint):
-        if not oauth_token_endpoint:
+        if oauth_token_endpoint is None:
             oauth_token_endpoint = self._fetch_oauth_token_endpoint()
         self.oauth_token_endpoint = self._validate_oauth_token_endpoint(
             oauth_token_endpoint
