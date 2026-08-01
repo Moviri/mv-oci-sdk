@@ -144,6 +144,7 @@ def test_dependency_and_build_safety_floors():
     for requirements in (setup_requirements, readable_requirements):
         assert str(requirements["cryptography"].specifier) == "<50.0.0,>=46.0.5"
         assert str(requirements["pyopenssl"].specifier) == "<27.0.0,>=26.0.0"
+        assert "crc32c" not in requirements
 
     assert str(readable_requirements["pytest"].specifier) == "<10,>=9.0.3"
 

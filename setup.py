@@ -39,7 +39,6 @@ requires = [
     "circuitbreaker>=1.3.1,<3.0.0",
     "urllib3>=2.6.3",
     "PyJWT>=2.12.0",
-    "crc32c==2.8.0",
 ]
 
 setup(
