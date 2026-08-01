@@ -23,7 +23,7 @@ def test_publish_workflow_uses_least_privilege_manual_dispatch():
 def test_validation_matrix_covers_every_supported_python():
     _, validate, _, _ = workflow_sections()
 
-    assert 'python-version: ["3.10", "3.11", "3.12", "3.13"]' in validate
+    assert 'python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]' in validate
     assert "python -m pytest upgrade_tests -q" in validate
     assert "python -m compileall -q src/oci" in validate
     assert "python -m pip check" in validate

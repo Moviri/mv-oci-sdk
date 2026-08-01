@@ -9,7 +9,7 @@ About
 Python SDK`_ but intentionally packages only the OCI services and shared
 runtime dependencies used by that Dynatrace extension.
 
-Python 3.10, 3.11, 3.12, and 3.13 are the tested support matrix. Package
+Python 3.10, 3.11, 3.12, 3.13, and 3.14 are the tested support matrix. Package
 metadata permits installation on Python 3.10 or newer so a newly released
 Python version can be evaluated without an artificial installation cap.
 

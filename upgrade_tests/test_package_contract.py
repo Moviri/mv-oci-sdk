@@ -168,7 +168,7 @@ def test_public_package_metadata_describes_consumer_exclusive_contract():
     assert "Moviri-maintained, consumer-exclusive runtime" in normalized_readme
     assert "curated for ``python-oci-compute``" in normalized_readme
     assert documented_services == RETAINED_SERVICES
-    assert "Python 3.10, 3.11, 3.12, and 3.13 are the tested support matrix" in normalized_readme
+    assert "Python 3.10, 3.11, 3.12, 3.13, and 3.14 are the tested support matrix" in normalized_readme
     assert "DNS models are retained only as an internal pagination dependency" in normalized_readme
     assert "The DNS client is not packaged or supported" in normalized_readme
     for excluded_helper in (
