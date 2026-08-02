@@ -303,39 +303,39 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
             self._token_signer_name(),
         )
         # Make POST request to OAuth endpoint, authenticated with the original token_signer
-        session = requests.Session()
-        try:
-            response = self._post_oauth_request(session, headers, payload)
-        except Exception as error:
-            self.logger.error(
-                "%s OAuth token request failed before response attempt=initial token_signer=%s error_type=%s",
-                self.LOG_PREFIX,
-                self._token_signer_name(),
-                type(error).__name__,
-            )
-            raise
-        self._log_oauth_response(response, "initial")
-        if response.status_code == 401 and self._force_refresh_token_signer():
-            # A 401 here is an AuthN failure for the wrapped signer, so retry once
-            # after forcing the same kind of token refresh BaseClient performs.
-            self.logger.debug(
-                "%s Retrying OAuth token exchange after wrapped signer refresh token_signer=%s",
-                self.LOG_PREFIX,
-                self._token_signer_name(),
-            )
+        with requests.Session() as session:
             try:
                 response = self._post_oauth_request(session, headers, payload)
             except Exception as error:
                 self.logger.error(
-                    "%s OAuth token request failed before response attempt=retry token_signer=%s error_type=%s",
+                    "%s OAuth token request failed before response attempt=initial token_signer=%s error_type=%s",
                     self.LOG_PREFIX,
                     self._token_signer_name(),
                     type(error).__name__,
                 )
                 raise
-            self._log_oauth_response(response, "retry")
+            self._log_oauth_response(response, "initial")
+            if response.status_code == 401 and self._force_refresh_token_signer():
+                # A 401 here is an AuthN failure for the wrapped signer, so retry once
+                # after forcing the same kind of token refresh BaseClient performs.
+                self.logger.debug(
+                    "%s Retrying OAuth token exchange after wrapped signer refresh token_signer=%s",
+                    self.LOG_PREFIX,
+                    self._token_signer_name(),
+                )
+                try:
+                    response = self._post_oauth_request(session, headers, payload)
+                except Exception as error:
+                    self.logger.error(
+                        "%s OAuth token request failed before response attempt=retry token_signer=%s error_type=%s",
+                        self.LOG_PREFIX,
+                        self._token_signer_name(),
+                        type(error).__name__,
+                    )
+                    raise
+                self._log_oauth_response(response, "retry")
 
-        return response
+            return response
 
     def _post_oauth_request(self, session, headers, payload):
         return session.post(self.oauth_token_endpoint,
@@ -343,7 +343,8 @@ class OauthExchangeTokenSigner(SecurityTokenSigner):
                             headers=headers,  # Content-Type: application/json
                             auth=self.token_signer,  # Original signer (e.g., instance principal)
                             verify=self.cert_bundle_verify,  # SSL verification
-                            timeout=(10, 60))  # Connection and read timeouts
+                            timeout=(10, 60),  # Connection and read timeouts
+                            stream=False)  # Buffer response content before session closure
 
     def _ensure_token_signer_current(self):
         get_security_token = getattr(self.token_signer, "get_security_token", None)

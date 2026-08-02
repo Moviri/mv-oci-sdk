@@ -6,12 +6,15 @@ import inspect
 import pkgutil
 import re
 from pathlib import Path
+from unittest.mock import Mock
 
 import jwt
 import oci
 import pytest
 import urllib3
 from packaging.requirements import Requirement
+
+from upgrade_tests.contracts import PRUNED_IMPORTABLE_MODULES
 
 try:
     import tomllib
@@ -75,25 +78,8 @@ def test_excluded_service_is_not_advertised_or_packaged(service):
     assert importlib.util.find_spec(f"oci.{service}") is None
 
 
-@pytest.mark.parametrize(
-    "module_name",
-    (
-        "oci.waiter",
-        "oci.core.compute_client_composite_operations",
-        "oci.dns.dns_client",
-        "oci.dns.dns_client_composite_operations",
-        "oci.file_storage.file_storage_client_composite_operations",
-        "oci.functions.functions_invoke_client",
-        "oci.functions.functions_management_client_composite_operations",
-        "oci.identity.identity_client_composite_operations",
-        "oci.load_balancer.load_balancer_client_composite_operations",
-        "oci.monitoring.monitoring_client_composite_operations",
-        "oci.network_load_balancer.network_load_balancer_client_composite_operations",
-        "oci.object_storage.object_storage_client_composite_operations",
-        "oci.object_storage.transfer",
-    ),
-)
-def test_unused_optional_module_is_not_packaged(module_name):
+@pytest.mark.parametrize("module_name", PRUNED_IMPORTABLE_MODULES)
+def test_every_pruned_importable_module_is_not_packaged(module_name):
     assert importlib.util.find_spec(module_name) is None
 
 
@@ -144,6 +130,8 @@ def test_dependency_and_build_safety_floors():
     for requirements in (setup_requirements, readable_requirements):
         assert str(requirements["cryptography"].specifier) == "<50.0.0,>=46.0.5"
         assert str(requirements["pyopenssl"].specifier) == "<27.0.0,>=26.0.0"
+        assert str(requirements["pyjwt"].specifier) == ">=2.12.0"
+        assert "jwt" not in requirements
         assert "crc32c" not in requirements
 
     assert str(readable_requirements["pytest"].specifier) == "<10,>=9.0.3"
@@ -209,6 +197,7 @@ def test_python_oci_compute_method_signatures():
         (oci.core.BlockstorageClient, "list_boot_volumes"): "(self, **kwargs)",
         (oci.core.ComputeManagementClient, "list_instance_pools"): "(self, compartment_id, **kwargs)",
         (oci.core.VirtualNetworkClient, "list_vcns"): "(self, compartment_id, **kwargs)",
+        (oci.core.VirtualNetworkClient, "list_subnets"): "(self, compartment_id, **kwargs)",
         (oci.core.VirtualNetworkClient, "list_ip_sec_connections"): "(self, compartment_id, **kwargs)",
         (oci.core.VirtualNetworkClient, "get_vnic"): "(self, vnic_id, **kwargs)",
         (oci.core.VirtualNetworkClient, "get_private_ip"): "(self, private_ip_id, **kwargs)",
@@ -222,6 +211,7 @@ def test_python_oci_compute_method_signatures():
         (oci.identity.IdentityClient, "get_compartment"): "(self, compartment_id, **kwargs)",
         (oci.load_balancer.LoadBalancerClient, "list_load_balancers"): "(self, compartment_id, **kwargs)",
         (oci.monitoring.MonitoringClient, "summarize_metrics_data"): "(self, compartment_id, summarize_metrics_data_details, **kwargs)",
+        (oci.monitoring.MonitoringClient, "list_alarms"): "(self, compartment_id, **kwargs)",
         (oci.monitoring.MonitoringClient, "list_alarms_status"): "(self, compartment_id, **kwargs)",
         (oci.network_load_balancer.NetworkLoadBalancerClient, "list_network_load_balancers"): "(self, compartment_id, **kwargs)",
         (oci.object_storage.ObjectStorageClient, "get_namespace"): "(self, **kwargs)",
@@ -230,7 +220,46 @@ def test_python_oci_compute_method_signatures():
         (oci.object_storage.ObjectStorageClient, "list_objects"): "(self, namespace_name, bucket_name, **kwargs)",
     }
 
-    assert len(expected) == 25
+    assert len(expected) == 27
     for (client_class, method_name), expected_signature in expected.items():
         method = getattr(client_class, method_name)
         assert str(inspect.signature(method)) == expected_signature
+
+
+def client_with_mock_transport(client_class):
+    client = object.__new__(client_class)
+    client.base_client = Mock()
+    client.base_client.get_preferred_retry_strategy.return_value = None
+    client.base_client.call_api.return_value = Mock()
+    client.retry_strategy = None
+    client.circuit_breaker_callback = None
+    return client
+
+
+def test_list_subnets_accepts_consumer_call_shape_and_reaches_transport():
+    client = client_with_mock_transport(oci.core.VirtualNetworkClient)
+
+    client.list_subnets(compartment_id="consumer-compartment")
+
+    request = client.base_client.call_api.call_args.kwargs
+    assert request["operation_name"] == "list_subnets"
+    assert request["query_params"]["compartmentId"] == "consumer-compartment"
+
+
+def test_list_alarms_accepts_consumer_call_shape_and_reaches_transport():
+    client = client_with_mock_transport(oci.monitoring.MonitoringClient)
+
+    client.list_alarms(
+        "consumer-compartment",
+        sort_by="displayName",
+        lifecycle_state=oci.monitoring.models.Alarm.LIFECYCLE_STATE_ACTIVE,
+        retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY,
+    )
+
+    request = client.base_client.call_api.call_args.kwargs
+    assert request["operation_name"] == "list_alarms"
+    assert request["query_params"] == {
+        "compartmentId": "consumer-compartment",
+        "sortBy": "displayName",
+        "lifecycleState": "ACTIVE",
+    }

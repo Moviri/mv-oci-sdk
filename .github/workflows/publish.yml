@@ -7,80 +7,16 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    name: Validate on Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install validation dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install --editable .
-      - name: Run upgrade suite
-        run: python -m pytest upgrade_tests -q
-      - name: Compile packaged source
-        run: python -m compileall -q src/oci
-      - name: Check installed dependencies
-        run: python -m pip check
-
-  build:
-    name: Build and verify distributions
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install build tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "build>=1.2,<2" "twine>=6,<7"
-      - name: Build distributions
-        run: python -m build
-      - name: Check distribution metadata
-        run: python -m twine check dist/*
-      - name: Verify wheel in a clean environment
-        run: |
-          python -m venv /tmp/mv-oci-wheel-check
-          /tmp/mv-oci-wheel-check/bin/python -m pip install --upgrade pip
-          /tmp/mv-oci-wheel-check/bin/python -m pip install dist/*.whl
-          /tmp/mv-oci-wheel-check/bin/python - <<'PY'
-          import importlib.metadata
-          import oci
-
-          assert importlib.metadata.version("mv-oci-sdk") == oci.__version__
-          try:
-              importlib.metadata.version("oci")
-          except importlib.metadata.PackageNotFoundError:
-              pass
-          else:
-              raise AssertionError("The official oci distribution is installed")
-          PY
-          /tmp/mv-oci-wheel-check/bin/python -m pip check
-      - name: Upload validated distributions
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-distributions
-          path: dist/*
-          if-no-files-found: error
+  validation:
+    name: Validate and build distributions
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
 
   publish:
     name: Publish validated distributions
-    if: github.ref == 'refs/heads/master'
-    needs: [validate, build]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    needs: validation
     runs-on: ubuntu-latest
     environment: pypi
     steps:

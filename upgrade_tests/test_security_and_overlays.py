@@ -74,6 +74,22 @@ def test_base_client_transport_matches_durable_overlay():
     assert transport == overlay + "\n\n"
 
 
+def test_oauth_exchange_session_ownership_matches_durable_overlay():
+    source = (
+        ROOT / "src" / "oci" / "auth" / "signers"
+        / "oauth_exhange_token_signer.py"
+    ).read_text(encoding="utf-8")
+    session_ownership = source[
+        source.index("    def _make_oauth_request(self, headers, payload):\n"):
+        source.index("    def _ensure_token_signer_current(self):\n")
+    ]
+    overlay = (
+        ROOT / "upstream" / "oauth-exchange-session-overlay.py"
+    ).read_text(encoding="utf-8")
+
+    assert session_ownership == overlay + "\n"
+
+
 def sdk_request():
     return Request(
         "GET",
@@ -667,6 +683,148 @@ def oauth_response(*, status_code, ok, url, reason, request_id="request-id"):
     response.reason = reason
     response.headers = {"opc-request-id": request_id}
     return response
+
+
+def close_tracking_oauth_session():
+    session = requests.Session()
+    session.close = Mock(wraps=session.close)
+    return session
+
+
+def test_oauth_exchange_closes_session_once_after_first_attempt_success():
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = "https://identity.example.com/oauth"
+    response = oauth_response(
+        status_code=200,
+        ok=True,
+        url=signer.oauth_token_endpoint,
+        reason="OK",
+    )
+    response.content = b'{"token": "buffered-token"}'
+    session = close_tracking_oauth_session()
+
+    with (
+        patch.object(signer, "_ensure_token_signer_current"),
+        patch.object(signer, "_post_oauth_request", return_value=response) as post,
+        patch(
+            "oci.auth.signers.oauth_exhange_token_signer.requests.Session",
+            return_value=session,
+        ),
+    ):
+        result = signer._make_oauth_request({}, {})
+
+    assert result is response
+    assert signer._decode_oauth_response(result) == '{"token": "buffered-token"}'
+    post.assert_called_once_with(session, {}, {})
+    session.close.assert_called_once_with()
+
+
+def test_oauth_exchange_reuses_and_closes_session_after_401_retry():
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = "https://identity.example.com/oauth"
+    unauthorized = oauth_response(
+        status_code=401,
+        ok=False,
+        url=signer.oauth_token_endpoint,
+        reason="Unauthorized",
+    )
+    success = oauth_response(
+        status_code=200,
+        ok=True,
+        url=signer.oauth_token_endpoint,
+        reason="OK",
+    )
+    session = close_tracking_oauth_session()
+
+    with (
+        patch.object(signer, "_ensure_token_signer_current"),
+        patch.object(signer, "_force_refresh_token_signer", return_value=True),
+        patch.object(
+            signer,
+            "_post_oauth_request",
+            side_effect=[unauthorized, success],
+        ) as post,
+        patch(
+            "oci.auth.signers.oauth_exhange_token_signer.requests.Session",
+            return_value=session,
+        ),
+    ):
+        result = signer._make_oauth_request({}, {})
+
+    assert result is success
+    assert [call.args[0] for call in post.call_args_list] == [session, session]
+    session.close.assert_called_once_with()
+
+
+def test_oauth_exchange_closes_session_when_initial_request_raises():
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = "https://identity.example.com/oauth"
+    session = close_tracking_oauth_session()
+
+    with (
+        patch.object(signer, "_ensure_token_signer_current"),
+        patch.object(
+            signer,
+            "_post_oauth_request",
+            side_effect=RuntimeError("initial failure"),
+        ),
+        patch(
+            "oci.auth.signers.oauth_exhange_token_signer.requests.Session",
+            return_value=session,
+        ),
+        pytest.raises(RuntimeError, match="initial failure"),
+    ):
+        signer._make_oauth_request({}, {})
+
+    session.close.assert_called_once_with()
+
+
+def test_oauth_exchange_closes_session_when_retry_raises():
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = "https://identity.example.com/oauth"
+    unauthorized = oauth_response(
+        status_code=401,
+        ok=False,
+        url=signer.oauth_token_endpoint,
+        reason="Unauthorized",
+    )
+    session = close_tracking_oauth_session()
+
+    with (
+        patch.object(signer, "_ensure_token_signer_current"),
+        patch.object(signer, "_force_refresh_token_signer", return_value=True),
+        patch.object(
+            signer,
+            "_post_oauth_request",
+            side_effect=[unauthorized, RuntimeError("retry failure")],
+        ),
+        patch(
+            "oci.auth.signers.oauth_exhange_token_signer.requests.Session",
+            return_value=session,
+        ),
+        pytest.raises(RuntimeError, match="retry failure"),
+    ):
+        signer._make_oauth_request({}, {})
+
+    session.close.assert_called_once_with()
+
+
+def test_oauth_exchange_post_buffers_response_before_session_close():
+    signer = make_oauth_exchange_signer()
+    signer.oauth_token_endpoint = "https://identity.example.com/oauth"
+    session = Mock()
+
+    signer._post_oauth_request(session, {"header": "value"}, {"payload": "value"})
+
+    session.post.assert_called_once_with(
+        signer.oauth_token_endpoint,
+        json={"payload": "value"},
+        headers={"header": "value"},
+        auth=signer.token_signer,
+        verify=True,
+        timeout=(10, 60),
+        stream=False,
+    )
 
 
 def test_oauth_exchange_endpoint_logging_omits_user_controlled_url(caplog, capsys):

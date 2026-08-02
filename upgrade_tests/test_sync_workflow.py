@@ -4,18 +4,33 @@ import os
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from upgrade_tests.contracts import PRUNED_SOURCE_TARGETS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "sync_upstream.py"
+WHEEL_VERIFY_SCRIPT = ROOT / "scripts" / "verify_wheel_pruning.py"
 
 
 def load_sync_module():
     spec = importlib.util.spec_from_file_location("sync_upstream", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_wheel_verify_module():
+    spec = importlib.util.spec_from_file_location(
+        "verify_wheel_pruning",
+        WHEEL_VERIFY_SCRIPT,
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -172,7 +187,10 @@ def test_selected_manifest_paths_exist_after_sync():
     prune_paths = sync.read_path_list(ROOT / "upstream" / "prune-paths.txt")
 
     assert selected_paths
+    assert len(prune_paths) == 23
+    assert set(prune_paths) == PRUNED_SOURCE_TARGETS
     assert all((ROOT / relative_path).exists() for relative_path in selected_paths)
+    assert all(not (ROOT / relative_path).exists() for relative_path in prune_paths)
     assert "src/oci/_vendor/urllib3" not in selected_paths
     assert "src/oci/_vendor/jwt" not in selected_paths
     selected_package_directories = {
@@ -208,6 +226,27 @@ def test_selected_manifest_paths_exist_after_sync():
         path = f"src/oci/{service}"
         assert path not in selected_paths
         assert path in prune_paths
+
+
+def test_wheel_prune_verifier_checks_every_manifest_target(tmp_path):
+    verifier = load_wheel_verify_module()
+    wheel = tmp_path / "distribution.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("oci/__init__.py", "")
+
+    verified = verifier.verify_wheel(wheel, tuple(sorted(PRUNED_SOURCE_TARGETS)))
+
+    assert verified == 23
+
+
+def test_wheel_prune_verifier_rejects_nested_pruned_content(tmp_path):
+    verifier = load_wheel_verify_module()
+    wheel = tmp_path / "distribution.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("oci/object_storage/transfer/upload_manager.py", "")
+
+    with pytest.raises(RuntimeError, match="src/oci/object_storage/transfer"):
+        verifier.verify_wheel(wheel, tuple(sorted(PRUNED_SOURCE_TARGETS)))
 
 
 def test_workflow_has_no_implicit_moving_branch_default():

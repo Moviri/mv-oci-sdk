@@ -36,6 +36,9 @@ TOKEN_EXCHANGE_SIGNER_OVERLAY_PATH = (
 OAUTH_EXCHANGE_LOGGING_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "oauth-exchange-logging-overlay.patch"
 )
+OAUTH_EXCHANGE_SESSION_OVERLAY_PATH = (
+    REPO_ROOT / "upstream" / "oauth-exchange-session-overlay.py"
+)
 BASE_CLIENT_TRANSPORT_OVERLAY_PATH = (
     REPO_ROOT / "upstream" / "base-client-transport-overlay.py"
 )
@@ -589,6 +592,18 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
         / "auth"
         / "signers"
         / "oauth_exhange_token_signer.py"
+    )
+    oauth_session_overlay = OAUTH_EXCHANGE_SESSION_OVERLAY_PATH.read_text(
+        encoding="utf-8"
+    )
+    if not oauth_session_overlay.endswith("\n"):
+        raise RuntimeError("OAuth exchange session overlay must end with a newline")
+    replace_between(
+        oauth_exchange_signer_path,
+        "    def _make_oauth_request(self, headers, payload):\n",
+        "    def _ensure_token_signer_current(self):\n",
+        oauth_session_overlay + "\n",
+        "OAuth exchange session ownership",
     )
     replace_exact(
         oauth_exchange_signer_path,
