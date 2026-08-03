@@ -1,0 +1,9 @@
+# Third-party libraries intentionally retained under src/oci/_vendor.
+# External urllib3 and PyJWT are declared package dependencies and do not
+# appear in this inventory.
+chardet 4.0.0
+httpsig_cffi (Oracle-maintained vendored snapshot)
+idna 3.10
+requests 2.27.1 (Oracle-compatible vendored transport)
+six 1.16.0
+sseclient (Oracle-maintained vendored snapshot)

@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 import platform
@@ -42,7 +42,6 @@ class ServiceError(Exception):
             "opc-request-id": self.request_id,
             "message": message,
             "operation_name": self.operation_name,
-            "timestamp": self.timestamp,
             "client_version": self.client_version,
             "request_endpoint": self.request_endpoint,
             "logging_tips": "To get more info on the failing request, refer to https://docs.oracle.com/en-us/iaas/tools/python/latest/logging.html for ways to log the request/response details."
@@ -104,8 +103,8 @@ class InvalidConfig(ClientError):
         return str(self.errors)
 
 
-class InvalidAlloyConfig(ClientError):
-    """Alloy config is invalid, or is blocking a service"""
+class InvalidDeveloperToolConfiguration(ClientError):
+    """Developer Tool Configuration is invalid, or is blocking a service"""
 
 
 class InvalidResourcePrincipalArguments(ClientError):
@@ -203,11 +202,13 @@ class ResumableDownloadException(Exception):
                  namespace_name,
                  bucket_name,
                  object_name,
-                 failed_parts):
+                 failed_parts,
+                 checksum_verifier=None):
         self.namespace_name = namespace_name
         self.bucket_name = bucket_name
         self.object_name = object_name
         self.failed_parts = failed_parts
+        self.checksum_verifier = checksum_verifier
 
 
 class DownloadFailedIncorrectDownloadSize(Exception):
@@ -223,3 +224,13 @@ class DownloadFailedIncorrectDownloadSize(Exception):
         self.object_size = object_size
         self.message = (f"The downloaded file didn't match the object size in bytes: expected {object_size}, "
                         f"got {actual_bytes_downloaded}")
+
+
+class ChecksumVerificationError(Exception):
+    """
+    This exception is raised when a checksum verification fails.
+    """
+    def __init__(self, expected_checksum, calculated_checksum):
+        self.expected_checksum = expected_checksum
+        self.calculated_checksum = calculated_checksum
+        self.message = (f"Checksum mismatch: expected {expected_checksum}, but calculated {calculated_checksum}")

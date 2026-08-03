@@ -32,36 +32,39 @@ with open_relative("README.rst") as f:
 
 requires = [
     "certifi",
-    "configparser==4.0.2 ; python_version < '3'",
-    "cryptography>=46.0.5",
-    "pyOpenSSL>=26.0.0",
+    "cryptography>=46.0.5,<50.0.0",
+    "pyOpenSSL>=26.0.0,<27.0.0",
     "python-dateutil>=2.5.3,<3.0.0",
     "pytz>=2016.10",
-    "circuitbreaker>=1.3.1,<2.0.0; python_version <= '3.6'",
-    "circuitbreaker>=1.3.1,<3.0.0; python_version >= '3.7'"
+    "circuitbreaker>=1.3.1,<3.0.0",
+    "urllib3>=2.6.3",
+    "PyJWT>=2.12.0",
 ]
 
 setup(
-    name="mv_oci_sdk",
-    url="https://github.com/Moviri/mv-oci-sdk",    
+    name="mv-oci-sdk",
+    url="https://github.com/Moviri/mv-oci-sdk",
     version=version,
-    description="Oracle Cloud Infrastructure Python SDK modified by Moviri for use in Dynatrace extensions",
+    description="Moviri-maintained OCI SDK runtime curated for Moviri OCI extensions",
     long_description=readme,
+    long_description_content_type="text/x-rst",
     author="Moviri",
     author_email="dynatrace_extensions@moviri.com",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     include_package_data=True,
     install_requires=requires,
+    python_requires=">=3.10",
     license="Universal Permissive License 1.0 or Apache License 2.0",
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: Apache Software License",
         "License :: OSI Approved :: Universal Permissive License (UPL)",
-        "Programming Language :: Python :: 3.6",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
     ]
 )

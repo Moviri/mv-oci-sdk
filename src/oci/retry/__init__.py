@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2016, 2025, Oracle and/or its affiliates.  All rights reserved.
+# Copyright (c) 2016, 2026, Oracle and/or its affiliates.  All rights reserved.
 # This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
 
 from .retry import BACKOFF_FULL_JITTER_VALUE, BACKOFF_EQUAL_JITTER_VALUE, BACKOFF_FULL_JITTER_EQUAL_ON_THROTTLE_VALUE, \
@@ -41,7 +41,7 @@ DEFAULT_FEDERATION_CLIENT_RETRY_STRATEGY = RetryStrategyBuilder() \
 #: * Retries on the following exception types:-
 #:
 #:      - timeouts and connection errors
-#:      - HTTP 409/IncorrectState, 429s (throttles)
+#:      - HTTP 409/IncorrectState, HTTP 409/LockConflict, 429s (throttles)
 #:      - Any HTTP 5xx except 501
 DEFAULT_RETRY_STRATEGY = RetryStrategyBuilder().add_max_attempts(max_attempts=8) \
     .add_total_elapsed_time(total_elapsed_time_seconds=600) \

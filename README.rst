@@ -1,144 +1,89 @@
-Oracle Cloud Infrastructure Python SDK
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Moviri OCI SDK runtime for OCI extensions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-=====
 About
 =====
 
-This is the Python SDK for Oracle Cloud Infrastructure. Supported Python versions are mentioned `here`__.
+``mv-oci-sdk`` is a Moviri-maintained, extension-exclusive runtime curated for
+``python-oci-compute`` and ``python-oci-database``. It is derived from the
+`Oracle Cloud Infrastructure Python SDK`_ but intentionally packages only the
+OCI services and shared runtime dependencies used by those Dynatrace
+extensions, plus the Database service surface retained for the database
+extension.
 
-__ https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/pythonsdk.htm#pythonsdk_topic-supported_python_versions
+Python 3.10, 3.11, 3.12, 3.13, and 3.14 are the tested support matrix. Package
+metadata permits installation on Python 3.10 or newer so a newly released
+Python version can be evaluated without an artificial installation cap.
 
-.. code-block:: pycon
+Supported public services
+=========================
 
-    >>> import oci
-    # Set up config
-    >>> config = oci.config.from_file(
-    ...     "~/.oci/config",
-    ...     "DEFAULT")
-    # Create a service client
-    >>> identity = oci.identity.IdentityClient(config)
-    # Get the current user
-    >>> user = identity.get_user(config["user"]).data
-    >>> print(user)
-    {
-      "compartment_id": "ocid1.tenancy.oc1...",
-      "description": "Test user",
-      "id": "ocid1.user.oc1...",
-      "inactive_status": null,
-      "lifecycle_state": "ACTIVE",
-      "name": "test-user@corp.com",
-      "time_created": "2016-08-30T23:46:44.680000+00:00"
-    }
+The supported public service surface is exactly:
 
-The project is open source and maintained by Oracle Corp. The home page for the project is `here`__.
+* ``core``
+* ``database``
+* ``file_storage``
+* ``functions``
+* ``identity``
+* ``load_balancer``
+* ``monitoring``
+* ``network_load_balancer``
+* ``object_storage``
 
-__ https://docs.oracle.com/en-us/iaas/tools/python/latest/index.html
+DNS models are retained only as an internal pagination dependency. The DNS
+client is not packaged or supported.
 
-============
+The Database client and its complete generated model graph are retained for
+``python-oci-database``. That extension currently collects Database service
+metrics through the Monitoring client, but retaining the Database surface
+keeps its domain models and direct service client available as the extension
+evolves.
+
+Other OCI services are not packaged or supported. The standalone waiter,
+generated composite-operation wrappers, Functions Invoke client, and Object
+Storage transfer helpers are also excluded. Oracle examples or API-reference
+pages that depend on an excluded service or helper do not apply unchanged to
+this distribution.
+
 Installation
 ============
 
-It is highly recommended that a Python virtual environment be used when installing oci.
-
-Please consult the `Installing packages using pip and virtualenv`__ guide from the Python Software Foundation for more information about virtual environments.
-
-__ https://packaging.python.org/guides/installing-using-pip-and-virtualenv/
-
-See `the installation guide`__ for installation troubleshooting and alternative install methods.
-
-__ https://docs.oracle.com/en-us/iaas/tools/python/latest/installation.html
-
-Once your virtual environment is active, oci can be installed using pip.
+Use a Python virtual environment and install the Moviri distribution:
 
 ::
 
     pip install mv-oci-sdk
 
+This distribution installs the ``oci`` import package. Do not install the
+official ``oci`` distribution into the same environment.
 
-============
-Development
-============
+Usage
+=====
 
-See the `development readme`__ for information on how to make changes, run tests and build the documentation and wheel for the Python SDK.
+Use the retained clients with the normal OCI configuration and signing
+concepts. For example:
 
-__ https://github.com/oracle/oci-python-sdk/blob/master/README-development.rst
+.. code-block:: python
 
-========
-Examples
-========
+    import oci
 
-Examples can be found `here`__.
+    config = oci.config.from_file("~/.oci/config", "DEFAULT")
+    identity = oci.identity.IdentityClient(config)
+    tenancy = identity.get_tenancy(config["tenancy"]).data
 
-__ https://github.com/oracle/oci-python-sdk/blob/master/examples/
+Oracle's documentation remains useful for general OCI authentication,
+configuration, and retained-service concepts. It describes the complete
+Oracle SDK, however, so verify that an example uses only the supported surface
+listed above.
 
-=============
-Documentation
-=============
+Attribution and license
+=======================
 
-Full documentation, including prerequisites and installation and configuration instructions, can be found `here`__.
+This curated runtime is derived from Oracle's open-source OCI Python SDK and
+retains Oracle copyright, license, and third-party notices. Oracle does not
+maintain this Moviri distribution.
 
-API reference can be found `here`__.
+The source is available under the Universal Permissive License (UPL) 1.0 or
+Apache License 2.0 as described in ``LICENSE.txt``.
 
-__ https://docs.oracle.com/en-us/iaas/tools/python/latest/index.html
-__ https://docs.oracle.com/en-us/iaas/tools/python/latest/api/landing.html
-
-A downloadable version of the documentation is include with in the release zip, which can be found `here`__.
-
-__ https://github.com/oracle/oci-python-sdk/releases
-
-====
-Help
-====
-
-See the “Questions or Feedback” section `here`__.
-
-__ https://docs.oracle.com/en-us/iaas/tools/python/latest/feedback.html
-
-=======
-Changes
-=======
-
-See `CHANGELOG`__.
-
-__ https://github.com/oracle/oci-python-sdk/blob/master/CHANGELOG.rst
-
-============
-Contributing
-============
-
-oci-python-sdk is an open source project. See `CONTRIBUTING`__ for details.
-
-Oracle gratefully acknowledges the contributions to oci-python-sdk that have been made by the community.
-
-__ https://github.com/oracle/oci-python-sdk/blob/master/CONTRIBUTING.rst
-
-============
-Known Issues
-============
-
-You can find information on any known issues with the SDK `here`__ and under the “Issues” tab of this
-project's `GitHub repository`__.
-
-__ https://docs.cloud.oracle.com/Content/knownissues.htm
-__ https://github.com/oracle/oci-python-sdk
-
-=======
-Survey
-=======
-
-Are you a Developer using the OCI SDK? If so, please fill out our survey to help us make the OCI SDK better for you.
-Click `here`__ for the survey page.
-
-__ https://oracle.questionpro.com/t/APeMlZka26?custom3=pypi
-
-=======
-License
-=======
-
-Copyright (c) 2016, 2021, Oracle and/or its affiliates.  All rights reserved.
-This software is dual-licensed to you under the Universal Permissive License (UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl or Apache License 2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose either license.
-
-See `LICENSE`__ for more details.
-
-__ https://github.com/oracle/oci-python-sdk/blob/master/LICENSE.txt
+.. _Oracle Cloud Infrastructure Python SDK: https://github.com/oracle/oci-python-sdk

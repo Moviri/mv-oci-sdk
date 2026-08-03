@@ -16,6 +16,7 @@ data/
 dist/
 __pycache__/
 env/
+.venv/
 docs/warnings.txt
 docs/_build/
 docs/apidocs/
