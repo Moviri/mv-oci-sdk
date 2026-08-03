@@ -51,6 +51,12 @@ EXCLUDED_SERVICES = (
 )
 
 
+def test_upgrade_tests_is_an_explicit_package():
+    root = Path(__file__).resolve().parents[1]
+
+    assert (root / "upgrade_tests" / "__init__.py").is_file()
+
+
 def test_version_and_every_retained_service_import():
     assert oci.__version__ == "2.183.0.1"
     assert importlib.metadata.version("mv-oci-sdk") == "2.183.0.1"

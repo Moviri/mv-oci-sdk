@@ -17,6 +17,8 @@ from oci._vendor import requests
 from oci.base_client import (
     BaseClient,
     OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME,
+    PROPAGATION_ENABLED_ENV_VAR_NAME,
+    PROPAGATION_REQUEST_ID_FILE_ENV_VAR_NAME,
     OCIConnection,
     OCIConnectionPool,
     OCIHTTPAdapter,
@@ -135,6 +137,48 @@ def successful_response(status_code=200, headers=None, content=b""):
     response.content = content
     response.elapsed = 0
     return response
+
+
+@pytest.mark.parametrize(
+    ("configured_value", "expected_value"),
+    (("true", True), ("false", False)),
+)
+def test_lowercase_propagation_config_preserves_request_id_generation(
+    monkeypatch,
+    tmp_path,
+    configured_value,
+    expected_value,
+):
+    propagation_file = tmp_path / "propagation-request-id.txt"
+    monkeypatch.setenv(PROPAGATION_ENABLED_ENV_VAR_NAME, configured_value)
+    monkeypatch.delenv(OPC_INCOMING_REQUEST_ID_ENV_VAR_NAME, raising=False)
+    monkeypatch.setenv(
+        PROPAGATION_REQUEST_ID_FILE_ENV_VAR_NAME,
+        str(propagation_file),
+    )
+
+    client = make_client()
+    client.session = MagicMock(
+        request=MagicMock(return_value=successful_response())
+    )
+    assert not propagation_file.exists()
+
+    client.call_api("/resource", "GET", header_params={})
+
+    assert client.PROPAGATION_ENABLED is expected_value
+    assert isinstance(client.PROPAGATION_ENABLED, bool)
+    request_id = client.session.request.call_args.kwargs["headers"].get(
+        constants.HEADER_REQUEST_ID
+    )
+    assert isinstance(request_id, str)
+    assert request_id
+    assert "incoming-sentinel" not in request_id
+
+
+def test_propagation_boolean_parser_is_static():
+    assert isinstance(BaseClient.__dict__["get_bool_env_var"], staticmethod)
+    assert BaseClient.get_bool_env_var("true") is True
+    assert BaseClient.get_bool_env_var("false") is False
 
 
 def sdk_request(url="https://example.com/resource"):

@@ -980,6 +980,7 @@ class BaseClient(object):
 
         return all(re.match(r'^[A-Za-z0-9_-]+$', label) for label in labels)
 
+    @staticmethod
     def get_bool_env_var(envVar: str, default=False) -> bool:
         if envVar is None:
             return False

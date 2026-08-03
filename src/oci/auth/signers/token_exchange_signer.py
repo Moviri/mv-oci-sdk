@@ -195,10 +195,14 @@ class TokenExchangeSigner(SecurityTokenSigner):
                 headers=headers,
                 data=data,
                 timeout=TOKEN_EXCHANGE_TIMEOUT,
+                allow_redirects=False,
             )
             self.logger.debug(
                 "Token exchange response status: %s", response.status_code
             )
+
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("Token exchange redirects are not allowed")
 
             response.raise_for_status()
             response_json = response.json()

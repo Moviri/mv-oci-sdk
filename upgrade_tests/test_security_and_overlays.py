@@ -90,6 +90,18 @@ def test_oauth_exchange_session_ownership_matches_durable_overlay():
     assert session_ownership == overlay + "\n"
 
 
+def test_token_exchange_signer_matches_durable_overlay():
+    source = (
+        ROOT / "src" / "oci" / "auth" / "signers"
+        / "token_exchange_signer.py"
+    ).read_bytes()
+    overlay = (
+        ROOT / "upstream" / "token-exchange-signer-overlay.py"
+    ).read_bytes()
+
+    assert source == overlay
+
+
 def sdk_request():
     return Request(
         "GET",
@@ -603,6 +615,49 @@ def test_token_exchange_signer_uses_https_once_and_finite_timeout():
     assert request_url == "https://identity.example.com/oauth2/v1/token"
     assert request_url.count("/oauth2/v1/token") == 1
     assert session.post.call_args.kwargs["timeout"] == (10, 60)
+    assert session.post.call_args.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize("status_code", [307, 308])
+def test_token_exchange_signer_rejects_redirect_without_replaying_secrets(
+    caplog,
+    status_code,
+):
+    redirect_location = (
+        "https://redirect.example.com/token?secret=redirect-location-sentinel"
+    )
+    session = MagicMock()
+    response = token_exchange_response("redirect-token-sentinel")
+    response.status_code = status_code
+    response.headers = {"Location": redirect_location}
+    session.post.return_value = response
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(
+            RuntimeError,
+            match="^Token exchange redirects are not allowed$",
+        ) as error:
+            make_token_exchange_signer(session)
+
+    session.post.assert_called_once()
+    assert session.post.call_args.kwargs["timeout"] == (10, 60)
+    assert session.post.call_args.kwargs["allow_redirects"] is False
+    response.raise_for_status.assert_not_called()
+    response.json.assert_not_called()
+
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    sensitive_values = (
+        "subject-jwt-sentinel",
+        "client-id-sentinel",
+        "client-secret-sentinel",
+        session.post.call_args.kwargs["headers"]["Authorization"],
+        redirect_location,
+        "redirect-location-sentinel",
+        "redirect-token-sentinel",
+    )
+    for sensitive_value in sensitive_values:
+        assert sensitive_value not in messages
+        assert sensitive_value not in str(error.value)
 
 
 def test_token_exchange_signer_preserves_domain_id_compatibility():

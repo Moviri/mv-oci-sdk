@@ -318,6 +318,15 @@ def apply_moviri_overlay(metadata: dict[str, str]) -> None:
     base_client_path = REPO_ROOT / "src" / "oci" / "base_client.py"
     replace_exact(
         base_client_path,
+        "    def get_bool_env_var(envVar: str, default=False) -> bool:\n",
+        (
+            "    @staticmethod\n"
+            "    def get_bool_env_var(envVar: str, default=False) -> bool:\n"
+        ),
+        "propagation boolean parser static binding",
+    )
+    replace_exact(
+        base_client_path,
         "import json\n",
         "import json\nimport io\n",
         "transport response buffer import",
