@@ -5,6 +5,7 @@ import importlib.util
 import inspect
 import pkgutil
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -24,6 +25,7 @@ except ModuleNotFoundError:  # Python 3.10
 
 RETAINED_SERVICES = (
     "core",
+    "database",
     "file_storage",
     "functions",
     "identity",
@@ -43,7 +45,6 @@ INTERNAL_PACKAGES = (
 )
 
 EXCLUDED_SERVICES = (
-    "database",
     "database_management",
     "database_tools",
     "queue",
@@ -65,6 +66,14 @@ def test_version_and_every_retained_service_import():
     for service in RETAINED_SERVICES:
         assert importlib.import_module(f"oci.{service}") is not None
         assert service in oci.__all__
+
+
+def test_database_service_init_matches_durable_overlay():
+    root = Path(__file__).resolve().parents[1]
+
+    assert (root / "src" / "oci" / "database" / "__init__.py").read_bytes() == (
+        root / "upstream" / "service-init-overlays" / "database.py"
+    ).read_bytes()
 
 
 def test_top_level_package_boundary_is_exact():
@@ -152,7 +161,7 @@ def test_dependency_and_build_safety_floors():
     assert str(build_requirements["wheel"].specifier) == ">=0.46.2"
 
 
-def test_public_package_metadata_describes_consumer_exclusive_contract():
+def test_public_package_metadata_describes_extension_exclusive_contract():
     root = Path(__file__).resolve().parents[1]
     readme = (root / "README.rst").read_text(encoding="utf-8")
     documented_services = tuple(
@@ -160,12 +169,13 @@ def test_public_package_metadata_describes_consumer_exclusive_contract():
     )
     normalized_readme = " ".join(readme.split())
 
-    assert "Moviri-maintained, consumer-exclusive runtime" in normalized_readme
-    assert "curated for ``python-oci-compute``" in normalized_readme
+    assert "Moviri-maintained, extension-exclusive runtime" in normalized_readme
+    assert "``python-oci-compute`` and ``python-oci-database``" in normalized_readme
     assert documented_services == RETAINED_SERVICES
     assert "Python 3.10, 3.11, 3.12, 3.13, and 3.14 are the tested support matrix" in normalized_readme
     assert "DNS models are retained only as an internal pagination dependency" in normalized_readme
     assert "The DNS client is not packaged or supported" in normalized_readme
+    assert "The Database client and its complete generated model graph are retained" in normalized_readme
     for excluded_helper in (
         "standalone waiter",
         "generated composite-operation wrappers",
@@ -190,12 +200,12 @@ def test_public_package_metadata_describes_consumer_exclusive_contract():
         if keyword.arg in {"description", "python_requires"}
     }
     assert setup_keywords == {
-        "description": "Moviri-maintained OCI SDK runtime curated exclusively for python-oci-compute",
+        "description": "Moviri-maintained OCI SDK runtime curated for Moviri OCI extensions",
         "python_requires": ">=3.10",
     }
 
 
-def test_python_oci_compute_method_signatures():
+def test_consumer_method_signatures():
     expected = {
         (oci.core.ComputeClient, "list_instances"): "(self, compartment_id, **kwargs)",
         (oci.core.ComputeClient, "list_vnic_attachments"): "(self, compartment_id, **kwargs)",
@@ -207,6 +217,10 @@ def test_python_oci_compute_method_signatures():
         (oci.core.VirtualNetworkClient, "list_ip_sec_connections"): "(self, compartment_id, **kwargs)",
         (oci.core.VirtualNetworkClient, "get_vnic"): "(self, vnic_id, **kwargs)",
         (oci.core.VirtualNetworkClient, "get_private_ip"): "(self, private_ip_id, **kwargs)",
+        (oci.database.DatabaseClient, "get_autonomous_database"): "(self, autonomous_database_id, **kwargs)",
+        (oci.database.DatabaseClient, "get_db_system"): "(self, db_system_id, **kwargs)",
+        (oci.database.DatabaseClient, "list_autonomous_databases"): "(self, compartment_id, **kwargs)",
+        (oci.database.DatabaseClient, "list_db_systems"): "(self, compartment_id, **kwargs)",
         (oci.file_storage.FileStorageClient, "list_file_systems"): "(self, compartment_id, availability_domain, **kwargs)",
         (oci.file_storage.FileStorageClient, "get_file_system"): "(self, file_system_id, **kwargs)",
         (oci.functions.FunctionsManagementClient, "list_applications"): "(self, compartment_id, **kwargs)",
@@ -226,7 +240,7 @@ def test_python_oci_compute_method_signatures():
         (oci.object_storage.ObjectStorageClient, "list_objects"): "(self, namespace_name, bucket_name, **kwargs)",
     }
 
-    assert len(expected) == 27
+    assert len(expected) == 31
     for (client_class, method_name), expected_signature in expected.items():
         method = getattr(client_class, method_name)
         assert str(inspect.signature(method)) == expected_signature
@@ -269,3 +283,43 @@ def test_list_alarms_accepts_consumer_call_shape_and_reaches_transport():
         "sortBy": "displayName",
         "lifecycleState": "ACTIVE",
     }
+
+
+def test_python_oci_database_monitoring_call_shape_reaches_transport():
+    client = client_with_mock_transport(oci.monitoring.MonitoringClient)
+    details = oci.monitoring.models.SummarizeMetricsDataDetails(
+        namespace="oci_autonomous_database",
+        query="CpuUtilization[1m].mean()",
+        start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_time=datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
+    )
+
+    client.summarize_metrics_data(
+        compartment_id="database-extension-compartment",
+        summarize_metrics_data_details=details,
+    )
+
+    request = client.base_client.call_api.call_args.kwargs
+    assert request["operation_name"] == "summarize_metrics_data"
+    assert request["query_params"] == {
+        "compartmentId": "database-extension-compartment",
+    }
+    assert request["body"] is details
+    assert request["response_type"] == "list[MetricData]"
+
+
+def test_database_client_call_shape_reaches_transport():
+    client = client_with_mock_transport(oci.database.DatabaseClient)
+
+    client.list_autonomous_databases(
+        compartment_id="database-extension-compartment",
+        lifecycle_state="AVAILABLE",
+    )
+
+    request = client.base_client.call_api.call_args.kwargs
+    assert request["operation_name"] == "list_autonomous_databases"
+    assert request["query_params"] == {
+        "compartmentId": "database-extension-compartment",
+        "lifecycleState": "AVAILABLE",
+    }
+    assert request["response_type"] == "list[AutonomousDatabaseSummary]"

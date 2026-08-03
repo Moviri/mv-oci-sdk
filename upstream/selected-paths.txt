@@ -4,6 +4,7 @@ src/oci/_vendor
 src/oci/auth
 src/oci/circuit_breaker
 src/oci/core
+src/oci/database
 src/oci/dns
 src/oci/file_storage
 src/oci/functions

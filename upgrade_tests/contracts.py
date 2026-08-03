@@ -1,7 +1,7 @@
 PRUNED_SOURCE_TARGETS = frozenset(
     {
         "src/oci/alloy.py",
-        "src/oci/database",
+        "src/oci/database/database_client_composite_operations.py",
         "src/oci/database_management",
         "src/oci/database_tools",
         "src/oci/queue",

@@ -21,6 +21,7 @@ INIT_OVERLAY_PATH = REPO_ROOT / "upstream" / "oci-init-overlay.py"
 SERVICE_INIT_OVERLAY_DIR = REPO_ROOT / "upstream" / "service-init-overlays"
 SERVICE_INIT_OVERLAYS = (
     "core",
+    "database",
     "dns",
     "file_storage",
     "functions",

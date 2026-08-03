@@ -47,6 +47,7 @@ _COMMON_EXPORTS = [
 
 _RETAINED_SERVICES = [
     "core",
+    "database",
     "file_storage",
     "functions",
     "identity",
@@ -75,6 +76,7 @@ if os.getenv("OCI_PYTHON_SDK_NO_SERVICE_IMPORTS", "").lower() not in ["true", "1
     else:
         from . import (  # noqa: F401
             core,
+            database,
             file_storage,
             functions,
             identity,

@@ -1,13 +1,15 @@
-Moviri OCI SDK runtime for python-oci-compute
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Moviri OCI SDK runtime for OCI extensions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 About
 =====
 
-``mv-oci-sdk`` is a Moviri-maintained, consumer-exclusive runtime curated for
-``python-oci-compute``. It is derived from the `Oracle Cloud Infrastructure
-Python SDK`_ but intentionally packages only the OCI services and shared
-runtime dependencies used by that Dynatrace extension.
+``mv-oci-sdk`` is a Moviri-maintained, extension-exclusive runtime curated for
+``python-oci-compute`` and ``python-oci-database``. It is derived from the
+`Oracle Cloud Infrastructure Python SDK`_ but intentionally packages only the
+OCI services and shared runtime dependencies used by those Dynatrace
+extensions, plus the Database service surface retained for the database
+extension.
 
 Python 3.10, 3.11, 3.12, 3.13, and 3.14 are the tested support matrix. Package
 metadata permits installation on Python 3.10 or newer so a newly released
@@ -19,6 +21,7 @@ Supported public services
 The supported public service surface is exactly:
 
 * ``core``
+* ``database``
 * ``file_storage``
 * ``functions``
 * ``identity``
@@ -29,6 +32,12 @@ The supported public service surface is exactly:
 
 DNS models are retained only as an internal pagination dependency. The DNS
 client is not packaged or supported.
+
+The Database client and its complete generated model graph are retained for
+``python-oci-database``. That extension currently collects Database service
+metrics through the Monitoring client, but retaining the Database surface
+keeps its domain models and direct service client available as the extension
+evolves.
 
 Other OCI services are not packaged or supported. The standalone waiter,
 generated composite-operation wrappers, Functions Invoke client, and Object

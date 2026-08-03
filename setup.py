@@ -45,7 +45,7 @@ setup(
     name="mv-oci-sdk",
     url="https://github.com/Moviri/mv-oci-sdk",
     version=version,
-    description="Moviri-maintained OCI SDK runtime curated exclusively for python-oci-compute",
+    description="Moviri-maintained OCI SDK runtime curated for Moviri OCI extensions",
     long_description=readme,
     long_description_content_type="text/x-rst",
     author="Moviri",

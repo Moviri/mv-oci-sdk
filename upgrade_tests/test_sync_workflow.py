@@ -205,6 +205,7 @@ def test_selected_manifest_paths_exist_after_sync():
         "auth",
         "circuit_breaker",
         "core",
+        "database",
         "dns",
         "file_storage",
         "functions",
@@ -217,7 +218,6 @@ def test_selected_manifest_paths_exist_after_sync():
         "retry",
     }
     for service in (
-        "database",
         "database_management",
         "database_tools",
         "queue",
